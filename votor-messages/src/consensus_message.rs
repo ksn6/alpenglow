@@ -13,6 +13,11 @@ pub const BLS_KEYPAIR_DERIVE_SEED: &[u8; 9] = b"alpenglow";
 /// Block, a (slot, hash) tuple
 pub type Block = (Slot, Hash);
 
+#[cfg_attr(
+    feature = "frozen-abi",
+    derive(AbiExample),
+    frozen_abi(digest = "HXCJbLTULqcqGqs5WBG31YPJQiVzMm6qYWKPzb1Uhb14")
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 /// BLS vote message, we need rank to look up pubkey
 pub struct VoteMessage {
@@ -179,6 +184,11 @@ impl Certificate {
     }
 }
 
+#[cfg_attr(
+    feature = "frozen-abi",
+    derive(AbiExample),
+    frozen_abi(digest = "GHpyrcTVqbJxBSMEdsjod8iN6fUatmDUbUqaBSfd1DRv")
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// BLS vote message, we need rank to look up pubkey
 pub struct CertificateMessage {
@@ -190,6 +200,11 @@ pub struct CertificateMessage {
     pub bitmap: Vec<u8>,
 }
 
+#[cfg_attr(
+    feature = "frozen-abi",
+    derive(AbiExample, AbiEnumVisitor),
+    frozen_abi(digest = "F8MaTvE1eMbVnRHerBhiwo6nuWg7gjpM19FHdggoZyiA")
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 /// BLS message data in Alpenglow
