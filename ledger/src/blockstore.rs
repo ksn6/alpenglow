@@ -1932,6 +1932,21 @@ impl Blockstore {
         location: BlockLocation,
         write_batch: &mut WriteBatch,
     ) {
+        // Check if UpdateParentMeta already exists and exit early if duplicate found
+        if let Ok(Some(mut existing_meta)) = self.update_parent_meta_cf.get((slot, location)) {
+            if !existing_meta.duplicate_observed {
+                // Mark as duplicate and update
+                existing_meta.duplicate_observed = true;
+                let _ = self.update_parent_meta_cf.put_in_batch(
+                    write_batch,
+                    (slot, location),
+                    &existing_meta,
+                );
+            }
+            // Already have UpdateParent for this slot/location, no need to continue
+            return;
+        }
+
         let current_index = current_shred.index();
         let fec_set_index = current_shred.fec_set_index();
         let data_complete = current_shred.data_complete();
@@ -1981,11 +1996,14 @@ impl Blockstore {
                     if let Some((new_parent_slot, new_parent_block_id)) =
                         Self::parse_update_parent_from_data_payload(payload)
                     {
+                        // First time seeing this UpdateParent
                         let update_parent_meta = UpdateParentMeta {
                             new_parent_slot,
                             new_parent_block_id,
                             fec_set_index: target_fec_set,
+                            duplicate_observed: false,
                         };
+
                         // Store the UpdateParent metadata
                         let _ = self.update_parent_meta_cf.put_in_batch(
                             write_batch,
@@ -12635,6 +12653,7 @@ pub mod tests {
             new_parent_slot,
             new_parent_block_id,
             fec_set_index: 1,
+            duplicate_observed: false,
         };
 
         blockstore
@@ -12659,6 +12678,7 @@ pub mod tests {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
+            duplicate_observed: false,
         };
 
         blockstore
@@ -12686,6 +12706,7 @@ pub mod tests {
             new_parent_slot: 8,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 1,
+            duplicate_observed: false,
         };
 
         blockstore
@@ -12698,6 +12719,7 @@ pub mod tests {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
+            duplicate_observed: false,
         };
 
         blockstore
@@ -12713,6 +12735,58 @@ pub mod tests {
         let retrieved_meta = retrieved.unwrap();
         assert_eq!(retrieved_meta.new_parent_slot, 7);
         assert_eq!(retrieved_meta.fec_set_index, 2);
+    }
+
+    #[test]
+    fn test_update_parent_duplicate_detection() {
+        // Test that duplicate UpdateParent detection works correctly
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+        let slot = 10;
+
+        // First insertion - duplicate_observed should be false
+        let meta1 = UpdateParentMeta {
+            new_parent_slot: 8,
+            new_parent_block_id: Hash::new_unique(),
+            fec_set_index: 1,
+            duplicate_observed: false,
+        };
+
+        blockstore
+            .update_parent_meta_cf
+            .put((slot, BlockLocation::Original), &meta1)
+            .unwrap();
+
+        // Verify first insertion
+        let retrieved1 = blockstore
+            .get_update_parent_meta(slot, BlockLocation::Original)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retrieved1.new_parent_slot, 8);
+        assert_eq!(retrieved1.fec_set_index, 1);
+        assert!(!retrieved1.duplicate_observed);
+
+        // Now simulate finding another UpdateParent at the same slot/location
+        // This would happen through check_for_update_parent, but we'll simulate it directly
+        let mut existing_meta = blockstore
+            .get_update_parent_meta(slot, BlockLocation::Original)
+            .unwrap()
+            .unwrap();
+        existing_meta.duplicate_observed = true;
+
+        blockstore
+            .update_parent_meta_cf
+            .put((slot, BlockLocation::Original), &existing_meta)
+            .unwrap();
+
+        // Verify duplicate_observed is now true
+        let retrieved2 = blockstore
+            .get_update_parent_meta(slot, BlockLocation::Original)
+            .unwrap()
+            .unwrap();
+        assert!(retrieved2.duplicate_observed);
+        assert_eq!(retrieved2.new_parent_slot, 8); // Other fields unchanged
+        assert_eq!(retrieved2.fec_set_index, 1);
     }
 
     #[test]
