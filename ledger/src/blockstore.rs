@@ -1907,9 +1907,9 @@ impl Blockstore {
         let component = BlockComponent::from_bytes(data).ok()?;
 
         // If we were able to parse the component, it must be a block marker
-        let marker = component
-            .as_versioned_block_marker()
-            .expect("Failed to parse VersionedBlockMarker");
+        // NOTE: don't panic if we can't parse the component, since it's possible that we have all
+        // zeroes for the bytes, which shouldn't fail.
+        let marker = component.as_versioned_block_marker()?;
 
         // Check if it's a BlockMarker with UpdateParent
         match marker {
