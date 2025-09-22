@@ -7,7 +7,13 @@ use {
     },
     crate::cluster_nodes::ClusterNodesCache,
     crossbeam_channel::Sender,
-    solana_entry::entry::Entry,
+    solana_entry::{
+        block_component::{
+            BlockComponent, BlockFooterV1, BlockMarkerV1, VersionedBlockFooter,
+            VersionedBlockMarker,
+        },
+        entry::Entry,
+    },
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{
@@ -15,8 +21,13 @@ use {
         MAX_DATA_SHREDS_PER_SLOT,
     },
     solana_time_utils::AtomicInterval,
+    solana_version::version,
     solana_votor::event::VotorEventSender,
-    std::{borrow::Cow, sync::RwLock},
+    std::{
+        borrow::Cow,
+        sync::RwLock,
+        time::{SystemTime, UNIX_EPOCH},
+    },
     tokio::sync::mpsc::Sender as AsyncSender,
 };
 
@@ -110,6 +121,69 @@ impl StandardBroadcastRun {
         shreds
     }
 
+    fn to_shreds_helper<I>(
+        &mut self,
+        shreds_iter: I,
+        process_stats: &mut ProcessShredsStats,
+        max_data_shreds_per_slot: u32,
+        max_code_shreds_per_slot: u32,
+    ) -> std::result::Result<Vec<Shred>, BroadcastError>
+    where
+        I: Iterator<Item = Shred>,
+    {
+        let shreds: Vec<_> = shreds_iter
+            .inspect(|shred| {
+                process_stats.record_shred(shred);
+                let next_index = match shred.shred_type() {
+                    ShredType::Code => &mut self.next_code_index,
+                    ShredType::Data => &mut self.next_shred_index,
+                };
+                *next_index = (*next_index).max(shred.index() + 1);
+            })
+            .collect();
+        if let Some(shred) = shreds.iter().max_by_key(|shred| shred.fec_set_index()) {
+            self.chained_merkle_root = shred.merkle_root().unwrap();
+        }
+        if self.next_shred_index > max_data_shreds_per_slot {
+            return Err(BroadcastError::TooManyShreds);
+        }
+        if self.next_code_index > max_code_shreds_per_slot {
+            return Err(BroadcastError::TooManyShreds);
+        }
+        Ok(shreds)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn block_component_to_shreds(
+        &mut self,
+        keypair: &Keypair,
+        component: &BlockComponent,
+        reference_tick: u8,
+        is_slot_end: bool,
+        process_stats: &mut ProcessShredsStats,
+        max_data_shreds_per_slot: u32,
+        max_code_shreds_per_slot: u32,
+    ) -> std::result::Result<Vec<Shred>, BroadcastError> {
+        let shreds_iter = Shredder::new(self.slot, self.parent, reference_tick, self.shred_version)
+            .unwrap()
+            .make_merkle_shreds_from_component(
+                keypair,
+                component,
+                is_slot_end,
+                Some(self.chained_merkle_root),
+                self.next_shred_index,
+                self.next_code_index,
+                &self.reed_solomon_cache,
+                process_stats,
+            );
+        self.to_shreds_helper(
+            shreds_iter,
+            process_stats,
+            max_data_shreds_per_slot,
+            max_code_shreds_per_slot,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn entries_to_shreds(
         &mut self,
@@ -121,38 +195,24 @@ impl StandardBroadcastRun {
         max_data_shreds_per_slot: u32,
         max_code_shreds_per_slot: u32,
     ) -> std::result::Result<Vec<Shred>, BroadcastError> {
-        let shreds: Vec<_> =
-            Shredder::new(self.slot, self.parent, reference_tick, self.shred_version)
-                .unwrap()
-                .make_merkle_shreds_from_entries(
-                    keypair,
-                    entries,
-                    is_slot_end,
-                    Some(self.chained_merkle_root),
-                    self.next_shred_index,
-                    self.next_code_index,
-                    &self.reed_solomon_cache,
-                    process_stats,
-                )
-                .inspect(|shred| {
-                    process_stats.record_shred(shred);
-                    let next_index = match shred.shred_type() {
-                        ShredType::Code => &mut self.next_code_index,
-                        ShredType::Data => &mut self.next_shred_index,
-                    };
-                    *next_index = (*next_index).max(shred.index() + 1);
-                })
-                .collect();
-        if let Some(shred) = shreds.iter().max_by_key(|shred| shred.fec_set_index()) {
-            self.chained_merkle_root = shred.merkle_root().unwrap();
-        }
-        if self.next_shred_index > max_data_shreds_per_slot {
-            return Err(BroadcastError::TooManyShreds);
-        }
-        if self.next_code_index > max_code_shreds_per_slot {
-            return Err(BroadcastError::TooManyShreds);
-        }
-        Ok(shreds)
+        let shreds_iter = Shredder::new(self.slot, self.parent, reference_tick, self.shred_version)
+            .unwrap()
+            .make_merkle_shreds_from_entries(
+                keypair,
+                entries,
+                is_slot_end,
+                Some(self.chained_merkle_root),
+                self.next_shred_index,
+                self.next_code_index,
+                &self.reed_solomon_cache,
+                process_stats,
+            );
+        self.to_shreds_helper(
+            shreds_iter,
+            process_stats,
+            max_data_shreds_per_slot,
+            max_code_shreds_per_slot,
+        )
     }
 
     #[cfg(test)]
@@ -272,7 +332,7 @@ impl StandardBroadcastRun {
         let reference_tick = last_tick_height
             .saturating_add(bank.ticks_per_slot())
             .saturating_sub(bank.max_tick_height());
-        let shreds = self
+        let mut shreds = self
             .entries_to_shreds(
                 keypair,
                 &receive_results.entries,
@@ -283,6 +343,41 @@ impl StandardBroadcastRun {
                 MAX_CODE_SHREDS_PER_SLOT as u32,
             )
             .unwrap();
+
+        // Include the block footer at the end of each block
+        if is_last_in_slot {
+            let block_producer_time_nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64;
+
+            let footer = BlockFooterV1 {
+                block_producer_time_nanos,
+                block_user_agent: format!("agave/{}", version!()).into_bytes(),
+            };
+
+            let footer = VersionedBlockFooter::Current(footer);
+            let footer = BlockMarkerV1::BlockFooter(footer);
+            let footer = VersionedBlockMarker::Current(footer);
+            let footer = BlockComponent::BlockMarker(footer);
+
+            println!("MAKING BLOCK FOOTER!!! {:#?}", &footer);
+
+            let footer_shreds = self
+                .block_component_to_shreds(
+                    keypair,
+                    &footer,
+                    reference_tick as u8,
+                    true,
+                    process_stats,
+                    MAX_DATA_SHREDS_PER_SLOT as u32,
+                    MAX_CODE_SHREDS_PER_SLOT as u32,
+                )
+                .unwrap();
+
+            shreds.extend(footer_shreds);
+        }
+
         // Insert the first data shred synchronously so that blockstore stores
         // that the leader started this block. This must be done before the
         // blocks are sent out over the wire, so that the slots we have already
