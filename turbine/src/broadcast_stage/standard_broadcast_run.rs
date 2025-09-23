@@ -303,11 +303,7 @@ impl StandardBroadcastRun {
             let entries = BlockComponent::Entries(receive_results.entries);
 
             if is_last_in_slot {
-                let footer = self.create_block_footer();
-
-                println!("MAKING BLOCK FOOTER!!! {:#?}", &footer);
-
-                vec![entries, footer]
+                vec![entries, self.create_block_footer()]
             } else {
                 vec![entries]
             }
