@@ -1931,20 +1931,15 @@ impl Blockstore {
         slot: Slot,
         location: BlockLocation,
         write_batch: &mut WriteBatch,
-    ) {
-        // Check if UpdateParentMeta already exists and exit early if duplicate found
-        if let Ok(Some(mut existing_meta)) = self.update_parent_meta_cf.get((slot, location)) {
-            if !existing_meta.duplicate_observed {
-                // Mark as duplicate and update
-                existing_meta.duplicate_observed = true;
-                let _ = self.update_parent_meta_cf.put_in_batch(
-                    write_batch,
-                    (slot, location),
-                    &existing_meta,
-                );
-            }
-            // Already have UpdateParent for this slot/location, no need to continue
-            return;
+        just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
+    ) -> Result<()> {
+        // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
+        // memory map and commit it at the end of the shred batch.
+        //
+        // If UpdateParentMeta already exists, mark the slot as dead and return early
+        if let Ok(Some(_)) = self.update_parent_meta_cf.get((slot, location)) {
+            self.set_dead_slot(slot)?;
+            return Ok(());
         }
 
         let current_index = current_shred.index();
@@ -1952,28 +1947,34 @@ impl Blockstore {
         let data_complete = current_shred.data_complete();
 
         // Determine which shred to check for UpdateParent and which FEC set it belongs to
-        let (shred_bytes, target_fec_set) = if data_complete {
+        //
+        // NOTE: this only works when SIMD-0317 and SIMD-0366 have been activated!
+        let (shred_bytes, target_fec_set_index) = if data_complete {
             // Case (a): Current shred has DATA_COMPLETE=true (end of FEC set)
             // Check the 0th shred in the NEXT FEC set for UpdateParent
-            let next_fec_set_index = fec_set_index + 1;
-            let next_shred_index = next_fec_set_index * DATA_SHREDS_PER_FEC_BLOCK as u32;
+            let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
+            let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
 
-            match self.get_data_shred_from_location(slot, next_shred_index as u64, location) {
-                Ok(Some(bytes)) => (Some(bytes), next_fec_set_index),
-                _ => (None, next_fec_set_index),
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(payload) => (Some(payload), next_fec_set_index),
+                None => (None, next_fec_set_index),
             }
-        } else if current_index > 0 {
+        } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 && current_index > 0 {
             // Case (b): Current shred has DATA_COMPLETE=false
             // Check if the PREVIOUS shred had DATA_COMPLETE=true
             let prev_shred_index = current_index - 1;
+            let shred_id = ShredId::new(slot, prev_shred_index, ShredType::Data);
 
-            match self.get_data_shred_from_location(slot, prev_shred_index as u64, location) {
-                Ok(Some(prev_bytes)) => {
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(prev_payload) => {
                     // Use get_flags to check DATA_COMPLETE without full deserialization
-                    if let Ok(flags) = shred::wire::get_flags(&prev_bytes) {
+                    if let Ok(flags) = shred::wire::get_flags(&prev_payload) {
                         if flags.contains(ShredFlags::DATA_COMPLETE_SHRED) {
                             // Previous shred was end of FEC set, current might have UpdateParent
-                            (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
+                            (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
+                            // (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
                         } else {
                             (None, fec_set_index)
                         }
@@ -2000,8 +2001,7 @@ impl Blockstore {
                         let update_parent_meta = UpdateParentMeta {
                             new_parent_slot,
                             new_parent_block_id,
-                            fec_set_index: target_fec_set,
-                            duplicate_observed: false,
+                            fec_set_index: target_fec_set_index,
                         };
 
                         // Store the UpdateParent metadata
@@ -2009,11 +2009,13 @@ impl Blockstore {
                             write_batch,
                             (slot, location),
                             &update_parent_meta,
-                        );
+                        )?;
                     }
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Create an entry to the specified `write_batch` that performs shred
@@ -2054,14 +2056,6 @@ impl Blockstore {
         let slot = shred.slot();
         let shred_index = u64::from(shred.index());
 
-        // Check for UpdateParent metadata
-        self.check_for_update_parent(
-            &shred,
-            slot,
-            location,
-            &mut shred_insertion_tracker.write_batch,
-        );
-
         let ShredInsertionTracker {
             index_working_set,
             slot_meta_working_set,
@@ -2073,6 +2067,9 @@ impl Blockstore {
             write_batch,
             newly_completed_data_sets,
         } = shred_insertion_tracker;
+
+        // Check for UpdateParent metadata
+        self.check_for_update_parent(&shred, slot, location, write_batch, just_inserted_shreds)?;
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);
@@ -12623,12 +12620,18 @@ pub mod tests {
         let last_of_fec = DATA_SHREDS_PER_FEC_BLOCK - 1;
         if shreds.len() > last_of_fec {
             let mut write_batch = blockstore.get_write_batch().unwrap();
-            blockstore.check_for_update_parent(
-                &shreds[last_of_fec],
-                slot,
-                BlockLocation::Original,
-                &mut write_batch,
-            );
+            let just_inserted_shreds = HashMap::new();
+
+            assert!(blockstore
+                .check_for_update_parent(
+                    &shreds[last_of_fec],
+                    slot,
+                    BlockLocation::Original,
+                    &mut write_batch,
+                    &just_inserted_shreds,
+                )
+                .is_ok());
+
             blockstore.write_batch(write_batch).unwrap();
         }
 
@@ -12653,7 +12656,6 @@ pub mod tests {
             new_parent_slot,
             new_parent_block_id,
             fec_set_index: 1,
-            duplicate_observed: false,
         };
 
         blockstore
@@ -12678,7 +12680,6 @@ pub mod tests {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
-            duplicate_observed: false,
         };
 
         blockstore
@@ -12706,7 +12707,6 @@ pub mod tests {
             new_parent_slot: 8,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 1,
-            duplicate_observed: false,
         };
 
         blockstore
@@ -12719,7 +12719,6 @@ pub mod tests {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
-            duplicate_observed: false,
         };
 
         blockstore
@@ -12735,58 +12734,6 @@ pub mod tests {
         let retrieved_meta = retrieved.unwrap();
         assert_eq!(retrieved_meta.new_parent_slot, 7);
         assert_eq!(retrieved_meta.fec_set_index, 2);
-    }
-
-    #[test]
-    fn test_update_parent_duplicate_detection() {
-        // Test that duplicate UpdateParent detection works correctly
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
-        let slot = 10;
-
-        // First insertion - duplicate_observed should be false
-        let meta1 = UpdateParentMeta {
-            new_parent_slot: 8,
-            new_parent_block_id: Hash::new_unique(),
-            fec_set_index: 1,
-            duplicate_observed: false,
-        };
-
-        blockstore
-            .update_parent_meta_cf
-            .put((slot, BlockLocation::Original), &meta1)
-            .unwrap();
-
-        // Verify first insertion
-        let retrieved1 = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
-            .unwrap()
-            .unwrap();
-        assert_eq!(retrieved1.new_parent_slot, 8);
-        assert_eq!(retrieved1.fec_set_index, 1);
-        assert!(!retrieved1.duplicate_observed);
-
-        // Now simulate finding another UpdateParent at the same slot/location
-        // This would happen through check_for_update_parent, but we'll simulate it directly
-        let mut existing_meta = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
-            .unwrap()
-            .unwrap();
-        existing_meta.duplicate_observed = true;
-
-        blockstore
-            .update_parent_meta_cf
-            .put((slot, BlockLocation::Original), &existing_meta)
-            .unwrap();
-
-        // Verify duplicate_observed is now true
-        let retrieved2 = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
-            .unwrap()
-            .unwrap();
-        assert!(retrieved2.duplicate_observed);
-        assert_eq!(retrieved2.new_parent_slot, 8); // Other fields unchanged
-        assert_eq!(retrieved2.fec_set_index, 1);
     }
 
     #[test]
@@ -12808,12 +12755,18 @@ pub mod tests {
 
         // Test with original location
         let mut write_batch = blockstore.get_write_batch().unwrap();
-        blockstore.check_for_update_parent(
-            &shreds[31],
-            slot,
-            BlockLocation::Original,
-            &mut write_batch,
-        );
+        let just_inserted_shreds = HashMap::new();
+
+        assert!(blockstore
+            .check_for_update_parent(
+                &shreds[31],
+                slot,
+                BlockLocation::Original,
+                &mut write_batch,
+                &just_inserted_shreds,
+            )
+            .is_ok());
+
         blockstore.write_batch(write_batch).unwrap();
 
         // Should return None since we haven't inserted UpdateParent markers
