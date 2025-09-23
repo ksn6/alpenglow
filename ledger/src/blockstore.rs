@@ -4126,6 +4126,7 @@ impl Blockstore {
                     })
             })
             .filter_map(Result::ok)
+            .flatten()
             .collect_vec())
     }
 
@@ -4144,8 +4145,7 @@ impl Blockstore {
         Ok(self
             .get_slot_components_in_block(slot, completed_ranges, slot_meta)?
             .into_iter()
-            .map(|component| component.entries().to_vec())
-            .flatten()
+            .flat_map(|component| component.entries().to_vec())
             .collect_vec())
     }
 
