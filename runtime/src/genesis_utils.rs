@@ -239,15 +239,6 @@ pub fn create_genesis_config_with_leader(
 }
 
 #[cfg(feature = "dev-context-only-utils")]
-pub fn create_genesis_config_with_alpenglow_vote_accounts_no_program(
-    mint_lamports: u64,
-    voting_keypairs: &[impl Borrow<ValidatorVoteKeypairs>],
-    stakes: Vec<u64>,
-) -> GenesisConfigInfo {
-    create_genesis_config_with_alpenglow_vote_accounts(mint_lamports, voting_keypairs, stakes)
-}
-
-#[cfg(feature = "dev-context-only-utils")]
 pub fn create_genesis_config_with_leader_enable_alpenglow(
     mint_lamports: u64,
     validator_pubkey: &Pubkey,
