@@ -2,6 +2,7 @@
 //! Proof of History ledger as well as iterative read, append write, and random
 //! access read to a persistent file-based ledger.
 
+use solana_entry::block_component::{BlockMarkerV2, VersionedBlockFooter, VersionedBlockMarker};
 #[cfg(feature = "dev-context-only-utils")]
 use trees::{Tree, TreeWalk};
 use {
@@ -1899,6 +1900,85 @@ impl Blockstore {
         None
     }
 
+    /// Parse block footer from data shred payload
+    fn parse_block_footer_from_data_payload(data: &[u8]) -> Option<u64> {
+        // Try to deserialize as BlockComponent
+        let component = BlockComponent::from_bytes(data).ok()?;
+        let component = component.first()?;
+
+        // If we were able to parse the component, it must be a block marker
+        // NOTE: don't panic if we can't parse the component, since it's possible that we have all
+        // zeroes for the bytes, which shouldn't fail.
+        let marker = component.as_versioned_block_marker()?;
+
+        // Check if it's a BlockMarker with BlockFooter
+        match marker {
+            VersionedBlockMarker::V2(BlockMarkerV2::BlockFooter(versioned_footer)) => {
+                // Extract the UpdateParentV1 from the versioned wrapper
+                match versioned_footer {
+                    VersionedBlockFooter::V1(footer) | VersionedBlockFooter::Current(footer) => {
+                        Some(footer.block_producer_time_nanos)
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn check_for_block_producer_time(
+        &self,
+        current_shred: &Shred,
+        slot: Slot,
+        location: BlockLocation,
+        write_batch: &mut WriteBatch,
+        just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
+    ) -> Result<()> {
+        // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
+        // memory map and commit it at the end of the shred batch.
+        //
+        // If BlockFooterMeta already exists, mark the slot as dead and return early
+        if let Ok(Some(_)) = self.block_footer_meta_cf.get((slot, location)) {
+            self.set_dead_slot(slot)?;
+            return Ok(());
+        }
+
+        // Fetch the payload for this shred
+        let Some(payload) = self.get_shred_from_just_inserted_or_db(
+            just_inserted_shreds,
+            current_shred.id(),
+            location,
+        ) else {
+            return Ok(());
+        };
+
+        // Check if this is a BlockMarker
+        if !BlockComponent::infer_is_block_marker(&payload).unwrap_or(false) {
+            return Ok(());
+        }
+
+        // Try to parse BlockFooter from the payload
+        let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&payload)
+        else {
+            return Ok(());
+        };
+
+        // First time seeing this BlockFooter
+        let block_footer_meta = BlockFooterMeta {
+            block_producer_time_nanos,
+        };
+
+        println!("RECEIVED BLOCK FOOTER :: {:?}", block_footer_meta);
+
+        // Store the BlockFotoer metadata
+        let _ = self.block_footer_meta_cf.put_in_batch(
+            write_batch,
+            (slot, location),
+            &block_footer_meta,
+        )?;
+
+        Ok(())
+    }
+
     /// Create an entry to the specified `write_batch` that performs shred
     /// insertion and associated metadata update.  The function also updates
     /// its in-memory copy of the associated metadata.
@@ -1948,6 +2028,15 @@ impl Blockstore {
             write_batch,
             newly_completed_data_sets,
         } = shred_insertion_tracker;
+
+        // Check for block producer time
+        self.check_for_block_producer_time(
+            &shred,
+            slot,
+            location,
+            write_batch,
+            just_inserted_shreds,
+        )?;
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);
@@ -4105,7 +4194,7 @@ impl Blockstore {
                         BlockstoreError::MissingShred(slot, index)
                     })
                 });
-        Ok(completed_ranges
+        let ret = Ok(completed_ranges
             .into_iter()
             .map(|Range { start, end }| end - start)
             .map(|num_shreds| {
@@ -4130,7 +4219,17 @@ impl Blockstore {
             })
             .filter_map(Result::ok)
             .flatten()
-            .collect_vec())
+            .collect_vec());
+
+        if let Ok(result) = ret.as_ref() {
+            for component in result {
+                if component.is_marker() {
+                    println!("!!! FOUND MARKER !!! :: {:?}", component);
+                }
+            }
+        }
+
+        ret
     }
 
     /// Fetch the entries corresponding to all of the shred indices in `completed_ranges`

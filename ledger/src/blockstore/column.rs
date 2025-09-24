@@ -2,7 +2,7 @@
 use {
     crate::{
         blockstore::error::Result,
-        blockstore_meta::{self},
+        blockstore_meta::{self, BlockLocation},
     },
     serde::{de::DeserializeOwned, Serialize},
     solana_clock::{Slot, UnixTimestamp},
@@ -1070,29 +1070,48 @@ impl TypedColumn for columns::AlternateMerkleRootMeta {
 }
 
 impl Column for columns::BlockFooterMeta {
-    type Index = (Slot, /* block_id */ Hash);
-    type Key = [u8; std::mem::size_of::<Slot>() + HASH_BYTES];
+    type Index = (Slot, BlockLocation);
+    // Key size: Slot (8 bytes) + discriminator (1 byte) + optional Hash (32 bytes)
+    // Maximum size when BlockLocation::Alternate
+    type Key = [u8; std::mem::size_of::<Slot>() + 1 + HASH_BYTES];
 
-    fn key((slot, block_id): &Self::Index) -> Self::Key {
-        convert_column_index_to_key_bytes!(Key,
-            ..8 => &slot.to_be_bytes(),
-            8.. => &block_id.to_bytes(),
-        )
+    #[inline]
+    fn key((slot, location): &Self::Index) -> Self::Key {
+        let mut key = [0u8; std::mem::size_of::<Slot>() + 1 + HASH_BYTES];
+        key[..8].copy_from_slice(&slot.to_le_bytes());
+
+        match location {
+            BlockLocation::Original => {
+                key[8] = 0; // discriminator for Original
+                            // Rest of the key remains zeros
+            }
+            BlockLocation::Alternate { block_id } => {
+                key[8] = 1; // discriminator for Alternate
+                key[9..41].copy_from_slice(&block_id.to_bytes());
+            }
+        }
+        key
     }
 
     fn index(key: &[u8]) -> Self::Index {
-        convert_column_key_bytes_to_index!(key,
-            0..8  => Slot::from_be_bytes, // slot
-            8..40 => Hash::new_from_array, // block_id
-        )
-    }
-
-    fn slot((slot, _block_id): Self::Index) -> Slot {
-        slot
+        let slot = Slot::from_le_bytes(key[0..8].try_into().unwrap());
+        let location = match key[8] {
+            0 => BlockLocation::Original,
+            1 => {
+                let block_id = Hash::new_from_array(key[9..41].try_into().unwrap());
+                BlockLocation::Alternate { block_id }
+            }
+            _ => panic!("Invalid BlockLocation discriminator"),
+        };
+        (slot, location)
     }
 
     fn as_index(slot: Slot) -> Self::Index {
-        (slot, Hash::default())
+        (slot, BlockLocation::Original)
+    }
+
+    fn slot((slot, _location): Self::Index) -> Slot {
+        slot
     }
 }
 
