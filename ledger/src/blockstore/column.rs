@@ -278,6 +278,15 @@ pub mod columns {
     /// * index type: `u64` (see [`SlotColumn`])
     /// * value type: [`blockstore_meta::SlotCertificates`]
     pub struct SlotCertificates;
+
+    #[derive(Debug)]
+    /// The block footer column
+    ///
+    /// Stores the block footer for each block
+    ///
+    /// * index type: `u64` (see [`SlotColumn`])
+    /// * value type: [`blockstore_meta::BlockFooterMeta`]
+    pub struct BlockFooterMeta;
 }
 
 macro_rules! convert_column_index_to_key_bytes {
@@ -1058,4 +1067,39 @@ impl ColumnName for columns::AlternateMerkleRootMeta {
 }
 impl TypedColumn for columns::AlternateMerkleRootMeta {
     type Type = blockstore_meta::MerkleRootMeta;
+}
+
+impl Column for columns::BlockFooterMeta {
+    type Index = (Slot, /* block_id */ Hash);
+    type Key = [u8; std::mem::size_of::<Slot>() + HASH_BYTES];
+
+    fn key((slot, block_id): &Self::Index) -> Self::Key {
+        convert_column_index_to_key_bytes!(Key,
+            ..8 => &slot.to_be_bytes(),
+            8.. => &block_id.to_bytes(),
+        )
+    }
+
+    fn index(key: &[u8]) -> Self::Index {
+        convert_column_key_bytes_to_index!(key,
+            0..8  => Slot::from_be_bytes, // slot
+            8..40 => Hash::new_from_array, // block_id
+        )
+    }
+
+    fn slot((slot, _block_id): Self::Index) -> Slot {
+        slot
+    }
+
+    fn as_index(slot: Slot) -> Self::Index {
+        (slot, Hash::default())
+    }
+}
+
+impl ColumnName for columns::BlockFooterMeta {
+    const NAME: &'static str = "block_footer_meta";
+}
+
+impl TypedColumn for columns::BlockFooterMeta {
+    type Type = blockstore_meta::BlockFooterMeta;
 }
