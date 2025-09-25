@@ -79,8 +79,6 @@ impl Shredder {
         let data = component.to_bytes().unwrap();
         stats.serialize_elapsed += now.elapsed().as_micros() as u64;
 
-        println!("leader, data to shred: {:?}", data);
-
         Self::make_shreds_from_data_slice(
             self,
             keypair,

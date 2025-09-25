@@ -560,22 +560,11 @@ impl BlockComponent {
     /// Returns `Some(true)` if count > 0, `Some(false)` if count == 0,
     /// or `None` if data is too short.
     pub fn infer_is_entries(data: &[u8]) -> Option<bool> {
-        println!("BlockComponent::infer_is_entries");
-        print!("data :: ");
-        for byte in data.iter() {
-            print!("{:02X} ", byte);
-        }
-        println!();
-
         if data.len() >= 8 {
-            dbg!(data.len());
             let first_8_bytes = &data[0..8];
-            dbg!(first_8_bytes);
             let value = u64::from_le_bytes(first_8_bytes.try_into().unwrap());
-            dbg!(value);
             Some(value != 0)
         } else {
-            println!("no chance");
             None
         }
     }

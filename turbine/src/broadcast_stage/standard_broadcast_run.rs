@@ -13,8 +13,8 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{
-        self, ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder,
-        MAX_CODE_SHREDS_PER_SLOT, MAX_DATA_SHREDS_PER_SLOT,
+        ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder, MAX_CODE_SHREDS_PER_SLOT,
+        MAX_DATA_SHREDS_PER_SLOT,
     },
     solana_time_utils::AtomicInterval,
     solana_version::version,
@@ -311,10 +311,6 @@ impl StandardBroadcastRun {
             )
             .unwrap();
 
-        println!("leader shreds.len(): {}", shreds.len());
-        dbg!(shreds.iter().filter(|shred| shred.is_data()).count());
-        dbg!(shreds.iter().filter(|shred| shred.is_code()).count());
-
         if is_last_in_slot {
             let footer = self.create_block_footer();
             let mut footer_shreds = self
@@ -328,54 +324,9 @@ impl StandardBroadcastRun {
                     MAX_CODE_SHREDS_PER_SLOT as u32,
                 )
                 .unwrap();
-            println!("leader footer_shreds.len(): {}", footer_shreds.len());
-
-            println!("total shreds.len(): {}", shreds.len());
-            dbg!(footer_shreds.iter().filter(|shred| shred.is_data()).count());
-            dbg!(footer_shreds.iter().filter(|shred| shred.is_code()).count());
-
-            let first_payload = footer_shreds[0].payload();
-            print!("first_payload :: ");
-            for byte in first_payload.iter() {
-                print!("{:02X} ", byte);
-            }
-            println!();
-
-            let first_data = shred::wire::get_data(footer_shreds[0].payload());
-            let first_data = first_data.unwrap();
-            print!("first_data:: ");
-            for byte in first_data.iter() {
-                print!("{:02X} ", byte);
-            }
-            println!();
-
-            let first_data_recons = BlockComponent::from_bytes(first_data).unwrap();
-            dbg!(first_data_recons);
 
             shreds.append(&mut footer_shreds);
         }
-
-        // let components_to_shred = {
-        //     let entries = BlockComponent::Entries(receive_results.entries);
-
-        //     if is_last_in_slot {
-        //         vec![entries, self.create_block_footer()]
-        //     } else {
-        //         vec![entries]
-        //     }
-        // };
-
-        // let shreds = self
-        //     .block_components_to_shreds(
-        //         keypair,
-        //         &components_to_shred,
-        //         reference_tick as u8,
-        //         is_last_in_slot,
-        //         process_stats,
-        //         MAX_DATA_SHREDS_PER_SLOT as u32,
-        //         MAX_CODE_SHREDS_PER_SLOT as u32,
-        //     )
-        //     .unwrap();
 
         // Insert the first data shred synchronously so that blockstore stores
         // that the leader started this block. This must be done before the
