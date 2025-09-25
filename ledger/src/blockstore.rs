@@ -3,7 +3,7 @@
 //! access read to a persistent file-based ledger.
 
 use crate::shred::ShredFlags;
-use solana_entry::block_component::{BlockMarkerV2, VersionedBlockFooter, VersionedBlockMarker};
+use solana_entry::block_component::VersionedBlockFooter;
 #[cfg(feature = "dev-context-only-utils")]
 use trees::{Tree, TreeWalk};
 
@@ -1906,24 +1906,21 @@ impl Blockstore {
     fn parse_block_footer_from_data_payload(data: &[u8]) -> Option<u64> {
         // Try to deserialize as BlockComponent
         let component = BlockComponent::from_bytes(data).ok()?;
+        dbg!(&component);
         let component = component.first()?;
+        dbg!(&component);
 
         // If we were able to parse the component, it must be a block marker
         // NOTE: don't panic if we can't parse the component, since it's possible that we have all
         // zeroes for the bytes, which shouldn't fail.
         let marker = component.as_versioned_block_marker()?;
+        dbg!(&marker);
 
         // Check if it's a BlockMarker with BlockFooter
-        match marker {
-            VersionedBlockMarker::V2(BlockMarkerV2::BlockFooter(versioned_footer)) => {
-                // Extract the UpdateParentV1 from the versioned wrapper
-                match versioned_footer {
-                    VersionedBlockFooter::V1(footer) | VersionedBlockFooter::Current(footer) => {
-                        Some(footer.block_producer_time_nanos)
-                    }
-                }
+        match marker.as_block_footer()? {
+            VersionedBlockFooter::V1(v1) | VersionedBlockFooter::Current(v1) => {
+                Some(v1.block_producer_time_nanos)
             }
-            _ => None,
         }
     }
 
@@ -1952,18 +1949,12 @@ impl Blockstore {
         let fec_set_index = current_shred.fec_set_index();
         let data_complete = current_shred.data_complete();
 
-        // dbg!(current_index);
-        // dbg!(current_index % DATA_SHREDS_PER_FEC_BLOCK as u32);
-        // dbg!(fec_set_index);
-        // dbg!(data_complete);
-
         // Determine which shred to check for UpdateParent and which FEC set it belongs to
         //
         // NOTE: this only works when SIMD-0317 and SIMD-0366 have been activated!
         let (shred_bytes, _) = if data_complete {
             // Case (a): Current shred has DATA_COMPLETE=true (end of FEC set)
             // Check the 0th shred in the NEXT FEC set for UpdateParent
-            // println!("case (a): data complete shred");
             let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
             let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
 
@@ -1974,8 +1965,7 @@ impl Blockstore {
             }
         } else if current_index == 0 {
             // Case (b): Current shred is the zero'th shred in the block; in theory, it could
-            // contain a BlockMarker.
-            // println!("case (b): zero'th index - start of the block");
+            // contain a BlockMarker (e.g., an UpdateParent marker).
             (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
         } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 {
             // Case (c): Current shred has DATA_COMPLETE=false
@@ -1994,7 +1984,6 @@ impl Blockstore {
                         if flags.contains(ShredFlags::DATA_COMPLETE_SHRED) {
                             // Previous shred was end of FEC set, current might have UpdateParent
                             (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
-                            // (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
                         } else {
                             (None, fec_set_index)
                         }
@@ -2010,7 +1999,6 @@ impl Blockstore {
 
         // Process the shred bytes if we have them
         let Some(shred_bytes) = shred_bytes else {
-            // println!();
             return Ok(());
         };
 
@@ -2023,6 +2011,8 @@ impl Blockstore {
 
         let payload = recons_shred.payload();
 
+        assert_eq!(&shred_bytes.bytes, &payload.bytes);
+
         // Check if this is a BlockMarker
         println!(
             "slot :: {:?}, shred slot :: {:?}, shred slot 2 :: {:?}, index :: {:?}",
@@ -2031,18 +2021,8 @@ impl Blockstore {
             shred::wire::get_slot(recons_shred.payload()),
             recons_shred.fec_set_index(),
         );
-        // println!("shred type: {:?}", shred::wire::get_shred_type(&payload));
-        // println!("data size :: {:?}", shred::wire::get_data_size(&payload));
-        // println!("payload? {payload:?}\n");
 
-        print!("payload :: ");
-        for byte in payload.iter() {
-            print!("{:02X} ", byte);
-        }
-        println!();
-        println!();
-
-        let data = shred::wire::get_data(&payload).unwrap();
+        let data = shred::wire::get_data(&shred_bytes).unwrap();
         print!("data :: ");
         for byte in data.iter() {
             print!("{:02X} ", byte);
@@ -2055,7 +2035,7 @@ impl Blockstore {
 
         // Try to parse BlockFooter from the payload
         println!("trying to parse block footer from payload");
-        let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&payload)
+        let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&data)
         else {
             return Ok(());
         };
