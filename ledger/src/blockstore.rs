@@ -3,7 +3,6 @@
 //! access read to a persistent file-based ledger.
 
 use crate::shred::ShredFlags;
-use solana_entry::block_component::VersionedBlockFooter;
 #[cfg(feature = "dev-context-only-utils")]
 use trees::{Tree, TreeWalk};
 
@@ -1902,40 +1901,20 @@ impl Blockstore {
         None
     }
 
-    /// Parse block footer from data shred payload
-    fn parse_block_footer_from_data_payload(data: &[u8]) -> Option<u64> {
-        // Try to deserialize as BlockComponent
-        let component = BlockComponent::from_bytes(data).ok()?;
-        let component = component.first()?;
-
-        // If we were able to parse the component, it must be a block marker
-        // NOTE: don't panic if we can't parse the component, since it's possible that we have all
-        // zeroes for the bytes, which shouldn't fail.
-        let marker = component.as_versioned_block_marker()?;
-
-        // Check if it's a BlockMarker with BlockFooter
-        match marker.as_block_footer()? {
-            VersionedBlockFooter::V1(v1) | VersionedBlockFooter::Current(v1) => {
-                Some(v1.block_producer_time_nanos)
-            }
-        }
-    }
-
-    fn check_for_block_producer_time(
+    fn check_for_block_components_in_single_shred(
         &self,
         current_shred: &Shred,
         slot: Slot,
         location: BlockLocation,
-        write_batch: &mut WriteBatch,
         just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<BlockComponent>>> {
         // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
         // memory map and commit it at the end of the shred batch.
         //
         // If UpdateParentMeta already exists, mark the slot as dead and return early
         if let Ok(Some(_)) = self.block_footer_meta_cf.get((slot, location)) {
             self.set_dead_slot(slot)?;
-            return Ok(());
+            return Ok(None);
         }
 
         let current_index = current_shred.index();
@@ -1989,21 +1968,54 @@ impl Blockstore {
 
         // Process the shred bytes if we have them
         let Some(shred_bytes) = shred_bytes else {
-            return Ok(());
+            return Ok(None);
         };
 
         // Get the data bytes
         let Ok(data) = shred::wire::get_data(&shred_bytes) else {
-            return Ok(());
+            return Ok(None);
         };
 
         // If this isn't a block marker, then return
         if !BlockComponent::infer_is_block_marker(data).unwrap_or(false) {
-            return Ok(());
+            return Ok(None);
         }
 
+        // Parse BlockComponents from the data bytes
+        let Ok(components) = BlockComponent::from_bytes(data) else {
+            return Ok(None);
+        };
+
+        Ok(Some(components))
+    }
+
+    fn check_for_block_producer_time(
+        &self,
+        current_shred: &Shred,
+        slot: Slot,
+        location: BlockLocation,
+        write_batch: &mut WriteBatch,
+        just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
+    ) -> Result<()> {
+        let Some(components) = self.check_for_block_components_in_single_shred(
+            current_shred,
+            slot,
+            location,
+            just_inserted_shreds,
+        )?
+        else {
+            return Ok(());
+        };
+
+        let Some(component) = components.first() else {
+            return Ok(());
+        };
+
         // Try to parse BlockFooter from the data bytes
-        let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&data)
+        let Some(block_producer_time_nanos) = component
+            .as_versioned_block_marker()
+            .and_then(|marker| marker.as_block_footer())
+            .and_then(|x| x.block_producer_time_nanos())
         else {
             return Ok(());
         };
@@ -2013,9 +2025,9 @@ impl Blockstore {
             block_producer_time_nanos,
         };
 
-        println!("RECEIVED BLOCK FOOTER :: {:?}", block_footer_meta);
+        println!("received block FOOTER :: {:?}", block_footer_meta);
 
-        // Store the BlockFotoer metadata
+        // Store the BlockFooter metadata
         let _ = self.block_footer_meta_cf.put_in_batch(
             write_batch,
             (slot, location),

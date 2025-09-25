@@ -1026,6 +1026,13 @@ impl VersionedBlockFooter {
         }
     }
 
+    /// Returns the block producer time in nanoseconds.
+    pub const fn block_producer_time_nanos(&self) -> Option<u64> {
+        match self {
+            Self::V1(footer) | Self::Current(footer) => Some(footer.block_producer_time_nanos),
+        }
+    }
+
     /// Serializes to bytes with version prefix.
     fn to_bytes(&self) -> Result<Vec<u8>, BlockComponentError> {
         let footer = match self {
