@@ -2,7 +2,6 @@ use {
     crate::shred::{
         self, Error, ProcessShredsStats, Shred, ShredData, ShredFlags, DATA_SHREDS_PER_FEC_BLOCK,
     },
-    itertools::Itertools,
     lazy_lru::LruCache,
     rayon::ThreadPool,
     reed_solomon_erasure::{galois_8::ReedSolomon, Error::TooFewDataShards},
@@ -65,10 +64,10 @@ impl Shredder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn make_merkle_shreds_from_components(
+    pub fn make_merkle_shreds_from_component(
         &self,
         keypair: &Keypair,
-        components: &[BlockComponent],
+        component: &BlockComponent,
         is_last_in_slot: bool,
         chained_merkle_root: Option<Hash>,
         next_shred_index: u32,
@@ -77,15 +76,10 @@ impl Shredder {
         stats: &mut ProcessShredsStats,
     ) -> impl Iterator<Item = Shred> {
         let now = Instant::now();
-
-        // TODO(ksn): rewrite this more efficiently by allocating only once
-        let data = components
-            .iter()
-            .flat_map(|component| component.to_bytes())
-            .flatten()
-            .collect_vec();
-
+        let data = component.to_bytes().unwrap();
         stats.serialize_elapsed += now.elapsed().as_micros() as u64;
+
+        println!("leader, data to shred: {:?}", data);
 
         Self::make_shreds_from_data_slice(
             self,

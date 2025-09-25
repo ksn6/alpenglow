@@ -560,11 +560,22 @@ impl BlockComponent {
     /// Returns `Some(true)` if count > 0, `Some(false)` if count == 0,
     /// or `None` if data is too short.
     pub fn infer_is_entries(data: &[u8]) -> Option<bool> {
+        println!("BlockComponent::infer_is_entries");
+        print!("data :: ");
+        for byte in data.iter() {
+            print!("{:02X} ", byte);
+        }
+        println!();
+
         if data.len() >= 8 {
+            dbg!(data.len());
             let first_8_bytes = &data[0..8];
+            dbg!(first_8_bytes);
             let value = u64::from_le_bytes(first_8_bytes.try_into().unwrap());
+            dbg!(value);
             Some(value != 0)
         } else {
+            println!("no chance");
             None
         }
     }
@@ -655,6 +666,13 @@ impl VersionedBlockMarker {
         match self {
             Self::V1(_) | Self::Current(_) => 1,
             Self::V2(_) => 2,
+        }
+    }
+
+    pub const fn as_block_footer(&self) -> Option<&VersionedBlockFooter> {
+        match self {
+            Self::V1(marker) | Self::Current(marker) => marker.as_block_footer(),
+            Self::V2(marker) => marker.as_block_footer(),
         }
     }
 
@@ -812,6 +830,12 @@ impl BlockMarkerV1 {
             }),
         }
     }
+
+    pub const fn as_block_footer(&self) -> Option<&VersionedBlockFooter> {
+        match self {
+            Self::BlockFooter(footer) => Some(footer),
+        }
+    }
 }
 
 impl Serialize for BlockMarkerV1 {
@@ -885,6 +909,13 @@ impl BlockMarkerV2 {
                 variant_type: "BlockMarkerV2".to_string(),
                 id: variant_id,
             }),
+        }
+    }
+
+    pub const fn as_block_footer(&self) -> Option<&VersionedBlockFooter> {
+        match self {
+            Self::BlockFooter(footer) => Some(footer),
+            _ => None,
         }
     }
 }

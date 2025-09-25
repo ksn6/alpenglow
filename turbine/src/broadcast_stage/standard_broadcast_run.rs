@@ -13,8 +13,8 @@ use {
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::shred::{
-        ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder, MAX_CODE_SHREDS_PER_SLOT,
-        MAX_DATA_SHREDS_PER_SLOT,
+        self, ProcessShredsStats, ReedSolomonCache, Shred, ShredType, Shredder,
+        MAX_CODE_SHREDS_PER_SLOT, MAX_DATA_SHREDS_PER_SLOT,
     },
     solana_time_utils::AtomicInterval,
     solana_version::version,
@@ -118,10 +118,10 @@ impl StandardBroadcastRun {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn block_components_to_shreds(
+    fn block_component_to_shreds(
         &mut self,
         keypair: &Keypair,
-        component: &[BlockComponent],
+        component: &BlockComponent,
         reference_tick: u8,
         is_slot_end: bool,
         process_stats: &mut ProcessShredsStats,
@@ -130,7 +130,7 @@ impl StandardBroadcastRun {
     ) -> std::result::Result<Vec<Shred>, BroadcastError> {
         let shreds_iter = Shredder::new(self.slot, self.parent, reference_tick, self.shred_version)
             .unwrap()
-            .make_merkle_shreds_from_components(
+            .make_merkle_shreds_from_component(
                 keypair,
                 component,
                 is_slot_end,
@@ -299,27 +299,83 @@ impl StandardBroadcastRun {
             .saturating_add(bank.ticks_per_slot())
             .saturating_sub(bank.max_tick_height());
 
-        let components_to_shred = {
-            let entries = BlockComponent::Entries(receive_results.entries);
-
-            if is_last_in_slot {
-                vec![entries, self.create_block_footer()]
-            } else {
-                vec![entries]
-            }
-        };
-
-        let shreds = self
-            .block_components_to_shreds(
+        let mut shreds = self
+            .block_component_to_shreds(
                 keypair,
-                &components_to_shred,
+                &BlockComponent::Entries(receive_results.entries),
                 reference_tick as u8,
-                is_last_in_slot,
+                false,
                 process_stats,
                 MAX_DATA_SHREDS_PER_SLOT as u32,
                 MAX_CODE_SHREDS_PER_SLOT as u32,
             )
             .unwrap();
+
+        println!("leader shreds.len(): {}", shreds.len());
+        dbg!(shreds.iter().filter(|shred| shred.is_data()).count());
+        dbg!(shreds.iter().filter(|shred| shred.is_code()).count());
+
+        if is_last_in_slot {
+            let footer = self.create_block_footer();
+            let mut footer_shreds = self
+                .block_component_to_shreds(
+                    keypair,
+                    &footer,
+                    reference_tick as u8,
+                    true,
+                    process_stats,
+                    MAX_DATA_SHREDS_PER_SLOT as u32,
+                    MAX_CODE_SHREDS_PER_SLOT as u32,
+                )
+                .unwrap();
+            println!("leader footer_shreds.len(): {}", footer_shreds.len());
+
+            println!("total shreds.len(): {}", shreds.len());
+            dbg!(footer_shreds.iter().filter(|shred| shred.is_data()).count());
+            dbg!(footer_shreds.iter().filter(|shred| shred.is_code()).count());
+
+            let first_payload = footer_shreds[0].payload();
+            print!("first_payload :: ");
+            for byte in first_payload.iter() {
+                print!("{:02X} ", byte);
+            }
+            println!();
+
+            let first_data = shred::wire::get_data(footer_shreds[0].payload());
+            let first_data = first_data.unwrap();
+            print!("first_data:: ");
+            for byte in first_data.iter() {
+                print!("{:02X} ", byte);
+            }
+            println!();
+
+            let first_data_recons = BlockComponent::from_bytes(first_data).unwrap();
+            dbg!(first_data_recons);
+
+            shreds.append(&mut footer_shreds);
+        }
+
+        // let components_to_shred = {
+        //     let entries = BlockComponent::Entries(receive_results.entries);
+
+        //     if is_last_in_slot {
+        //         vec![entries, self.create_block_footer()]
+        //     } else {
+        //         vec![entries]
+        //     }
+        // };
+
+        // let shreds = self
+        //     .block_components_to_shreds(
+        //         keypair,
+        //         &components_to_shred,
+        //         reference_tick as u8,
+        //         is_last_in_slot,
+        //         process_stats,
+        //         MAX_DATA_SHREDS_PER_SLOT as u32,
+        //         MAX_CODE_SHREDS_PER_SLOT as u32,
+        //     )
+        //     .unwrap();
 
         // Insert the first data shred synchronously so that blockstore stores
         // that the leader started this block. This must be done before the
@@ -878,12 +934,16 @@ mod test {
 
         let mut stats = ProcessShredsStats::default();
 
-        let components = vec![BlockComponent::Entries(
-            entries[0..entries.len() - 2].to_vec(),
-        )];
-
         let (data, coding) = bs
-            .block_components_to_shreds(&keypair, &components, 0, false, &mut stats, 1000, 1000)
+            .block_component_to_shreds(
+                &keypair,
+                &BlockComponent::Entries(entries[0..entries.len() - 2].to_vec()),
+                0,
+                false,
+                &mut stats,
+                1000,
+                1000,
+            )
             .unwrap()
             .into_iter()
             .partition::<Vec<_>, _>(Shred::is_data);
@@ -891,8 +951,15 @@ mod test {
         assert!(!data.is_empty());
         assert!(!coding.is_empty());
 
-        let components = vec![BlockComponent::Entries(entries)];
-        let r = bs.block_components_to_shreds(&keypair, &components, 0, false, &mut stats, 10, 10);
+        let r = bs.block_component_to_shreds(
+            &keypair,
+            &BlockComponent::Entries(entries),
+            0,
+            false,
+            &mut stats,
+            10,
+            10,
+        );
         info!("{r:?}");
         assert_matches!(r, Err(BroadcastError::TooManyShreds));
     }

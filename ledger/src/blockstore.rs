@@ -2,9 +2,11 @@
 //! Proof of History ledger as well as iterative read, append write, and random
 //! access read to a persistent file-based ledger.
 
+use crate::shred::ShredFlags;
 use solana_entry::block_component::{BlockMarkerV2, VersionedBlockFooter, VersionedBlockMarker};
 #[cfg(feature = "dev-context-only-utils")]
 use trees::{Tree, TreeWalk};
+
 use {
     crate::{
         ancestor_iterator::AncestorIterator,
@@ -1925,7 +1927,11 @@ impl Blockstore {
         }
     }
 
-    fn check_for_block_producer_time(
+    fn on_block_footer(&self, footer: &VersionedBlockFooter) {
+        println!("RECEIVED FOOTER :: {footer:?}");
+    }
+
+    fn check_for_block_producer_time2(
         &self,
         current_shred: &Shred,
         slot: Slot,
@@ -1936,6 +1942,156 @@ impl Blockstore {
         // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
         // memory map and commit it at the end of the shred batch.
         //
+        // If UpdateParentMeta already exists, mark the slot as dead and return early
+        if let Ok(Some(_)) = self.block_footer_meta_cf.get((slot, location)) {
+            self.set_dead_slot(slot)?;
+            return Ok(());
+        }
+
+        let current_index = current_shred.index();
+        let fec_set_index = current_shred.fec_set_index();
+        let data_complete = current_shred.data_complete();
+
+        // dbg!(current_index);
+        // dbg!(current_index % DATA_SHREDS_PER_FEC_BLOCK as u32);
+        // dbg!(fec_set_index);
+        // dbg!(data_complete);
+
+        // Determine which shred to check for UpdateParent and which FEC set it belongs to
+        //
+        // NOTE: this only works when SIMD-0317 and SIMD-0366 have been activated!
+        let (shred_bytes, _) = if data_complete {
+            // Case (a): Current shred has DATA_COMPLETE=true (end of FEC set)
+            // Check the 0th shred in the NEXT FEC set for UpdateParent
+            // println!("case (a): data complete shred");
+            let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
+            let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
+
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(payload) => (Some(payload), next_fec_set_index),
+                None => (None, next_fec_set_index),
+            }
+        } else if current_index == 0 {
+            // Case (b): Current shred is the zero'th shred in the block; in theory, it could
+            // contain a BlockMarker.
+            // println!("case (b): zero'th index - start of the block");
+            (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
+        } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 {
+            // Case (c): Current shred has DATA_COMPLETE=false
+            // Check if the PREVIOUS shred had DATA_COMPLETE=true
+            // println!("case (c): non-data complete shred, start of FEC set");
+            let prev_shred_index = current_index - 1;
+            let shred_id = ShredId::new(slot, prev_shred_index, ShredType::Data);
+
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(prev_payload) => {
+                    // Use get_flags to check DATA_COMPLETE without full deserialization
+                    if let Ok(flags) = shred::wire::get_flags(&prev_payload) {
+                        // println!("case (b): we have the flags");
+
+                        if flags.contains(ShredFlags::DATA_COMPLETE_SHRED) {
+                            // Previous shred was end of FEC set, current might have UpdateParent
+                            (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
+                            // (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
+                        } else {
+                            (None, fec_set_index)
+                        }
+                    } else {
+                        (None, fec_set_index)
+                    }
+                }
+                _ => (None, fec_set_index),
+            }
+        } else {
+            (None, fec_set_index)
+        };
+
+        // Process the shred bytes if we have them
+        let Some(shred_bytes) = shred_bytes else {
+            // println!();
+            return Ok(());
+        };
+
+        let shred_payload = shred_bytes.clone();
+        let recons_shred = Shred::new_from_serialized_shred(shred_payload.into_owned()).unwrap();
+        // println!("we have a shred!! {:?}\n\n", recons_shred);
+        // dbg!(recons_shred.fec_set_index());
+        // dbg!(recons_shred.is_data());
+        // dbg!(recons_shred.slot());
+
+        let payload = recons_shred.payload();
+
+        // Check if this is a BlockMarker
+        println!(
+            "slot :: {:?}, shred slot :: {:?}, shred slot 2 :: {:?}, index :: {:?}",
+            slot,
+            shred::wire::get_slot(&payload),
+            shred::wire::get_slot(recons_shred.payload()),
+            recons_shred.fec_set_index(),
+        );
+        // println!("shred type: {:?}", shred::wire::get_shred_type(&payload));
+        // println!("data size :: {:?}", shred::wire::get_data_size(&payload));
+        // println!("payload? {payload:?}\n");
+
+        print!("payload :: ");
+        for byte in payload.iter() {
+            print!("{:02X} ", byte);
+        }
+        println!();
+        println!();
+
+        let data = shred::wire::get_data(&payload).unwrap();
+        print!("data :: ");
+        for byte in data.iter() {
+            print!("{:02X} ", byte);
+        }
+        println!();
+
+        if !BlockComponent::infer_is_block_marker(data).unwrap_or(false) {
+            return Ok(());
+        }
+
+        // Try to parse BlockFooter from the payload
+        println!("trying to parse block footer from payload");
+        let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&payload)
+        else {
+            return Ok(());
+        };
+
+        // First time seeing this BlockFooter
+        let block_footer_meta = BlockFooterMeta {
+            block_producer_time_nanos,
+        };
+
+        println!("RECEIVED BLOCK FOOTER :: {:?}", block_footer_meta);
+
+        // Store the BlockFotoer metadata
+        let _ = self.block_footer_meta_cf.put_in_batch(
+            write_batch,
+            (slot, location),
+            &block_footer_meta,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn check_for_block_producer_time(
+        &self,
+        current_shred: &Shred,
+        slot: Slot,
+        location: BlockLocation,
+        write_batch: &mut WriteBatch,
+    ) -> Result<()> {
+        // Can only parse data shreds
+        if current_shred.is_code() {
+            return Ok(());
+        }
+
+        // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
+        // memory map and commit it at the end of the shred batch.
+        //
         // If BlockFooterMeta already exists, mark the slot as dead and return early
         if let Ok(Some(_)) = self.block_footer_meta_cf.get((slot, location)) {
             self.set_dead_slot(slot)?;
@@ -1943,20 +2099,29 @@ impl Blockstore {
         }
 
         // Fetch the payload for this shred
-        let Some(payload) = self.get_shred_from_just_inserted_or_db(
-            just_inserted_shreds,
-            current_shred.id(),
-            location,
-        ) else {
+        let payload = current_shred.payload();
+
+        // Parse the data part of the payload from the shred
+        let Ok(data) = shred::wire::get_data(&payload) else {
             return Ok(());
         };
 
         // Check if this is a BlockMarker
-        if !BlockComponent::infer_is_block_marker(&payload).unwrap_or(false) {
+        println!(
+            "slot :: {:?}, shred slot :: {:?}",
+            slot,
+            shred::wire::get_slot(&payload)
+        );
+        println!("shred type: {:?}", shred::wire::get_shred_type(&payload));
+        println!("data size :: {:?}", shred::wire::get_data_size(&payload));
+        println!("is block footer payload a block marker? {data:?}");
+        println!("payload? {payload:?}\n");
+        if !BlockComponent::infer_is_block_marker(data).unwrap_or(false) {
             return Ok(());
         }
 
         // Try to parse BlockFooter from the payload
+        println!("trying to parse block footer from payload");
         let Some(block_producer_time_nanos) = Self::parse_block_footer_from_data_payload(&payload)
         else {
             return Ok(());
@@ -2029,8 +2194,8 @@ impl Blockstore {
             newly_completed_data_sets,
         } = shred_insertion_tracker;
 
-        // Check for block producer time
-        self.check_for_block_producer_time(
+        // Check for UpdateParent metadata
+        self.check_for_block_producer_time2(
             &shred,
             slot,
             location,
@@ -4194,7 +4359,8 @@ impl Blockstore {
                         BlockstoreError::MissingShred(slot, index)
                     })
                 });
-        let ret = Ok(completed_ranges
+
+        let components = completed_ranges
             .into_iter()
             .map(|Range { start, end }| end - start)
             .map(|num_shreds| {
@@ -4219,17 +4385,18 @@ impl Blockstore {
             })
             .filter_map(Result::ok)
             .flatten()
-            .collect_vec());
+            .collect_vec();
 
-        if let Ok(result) = ret.as_ref() {
-            for component in result {
-                if component.is_marker() {
-                    println!("!!! FOUND MARKER !!! :: {:?}", component);
-                }
+        for marker in components
+            .iter()
+            .filter_map(|component| component.as_versioned_block_marker())
+        {
+            if let Some(footer) = marker.as_block_footer() {
+                self.on_block_footer(footer);
             }
         }
 
-        ret
+        Ok(components)
     }
 
     /// Fetch the entries corresponding to all of the shred indices in `completed_ranges`
