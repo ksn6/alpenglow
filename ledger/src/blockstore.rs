@@ -1989,31 +1989,39 @@ impl Blockstore {
         };
 
         // Process the shred bytes if we have them
-        if let Some(shred_bytes) = shred_bytes {
-            if let Ok(payload) = shred::layout::get_data(&shred_bytes) {
-                // Check if this is a BlockMarker
-                if BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
-                    // Try to parse UpdateParent from the payload
-                    if let Some((new_parent_slot, new_parent_block_id)) =
-                        Self::parse_update_parent_from_data_payload(payload)
-                    {
-                        // First time seeing this UpdateParent
-                        let update_parent_meta = UpdateParentMeta {
-                            new_parent_slot,
-                            new_parent_block_id,
-                            fec_set_index: target_fec_set_index,
-                        };
+        let Some(shred_bytes) = shred_bytes else {
+            return Ok(());
+        };
 
-                        // Store the UpdateParent metadata
-                        let _ = self.update_parent_meta_cf.put_in_batch(
-                            write_batch,
-                            (slot, location),
-                            &update_parent_meta,
-                        )?;
-                    }
-                }
-            }
+        let Ok(payload) = shred::layout::get_data(&shred_bytes) else {
+            return Ok(());
+        };
+
+        // Check if this is a BlockMarker
+        if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
+            return Ok(());
         }
+
+        // Try to parse UpdateParent from the payload
+        let Some((new_parent_slot, new_parent_block_id)) =
+            Self::parse_update_parent_from_data_payload(payload)
+        else {
+            return Ok(());
+        };
+
+        // First time seeing this UpdateParent
+        let update_parent_meta = UpdateParentMeta {
+            new_parent_slot,
+            new_parent_block_id,
+            fec_set_index: target_fec_set_index,
+        };
+
+        // Store the UpdateParent metadata
+        let _ = self.update_parent_meta_cf.put_in_batch(
+            write_batch,
+            (slot, location),
+            &update_parent_meta,
+        )?;
 
         Ok(())
     }
