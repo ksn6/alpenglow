@@ -9,12 +9,8 @@ use {
         ser::{Serialize, Serializer},
     },
     solana_account::{AccountSharedData, ReadableAccount},
-    solana_bls_signatures::{
-        keypair::Keypair as BLSKeypair, pubkey::PubkeyCompressed as BLSPubkeyCompressed,
-    },
     solana_instruction::error::InstructionError,
     solana_pubkey::Pubkey,
-    solana_vote_interface::authorized_voters::AuthorizedVoters,
     std::{
         cmp::Ordering,
         collections::{hash_map::Entry, HashMap},
@@ -134,6 +130,11 @@ impl VoteAccount {
 
     #[cfg(feature = "dev-context-only-utils")]
     pub fn new_random_alpenglow() -> VoteAccount {
+        use solana_bls_signatures::{
+            keypair::Keypair as BLSKeypair, pubkey::PubkeyCompressed as BLSPubkeyCompressed,
+        };
+        use solana_vote_interface::authorized_voters::AuthorizedVoters;
+
         let bls_pubkey_compressed: BLSPubkeyCompressed =
             BLSKeypair::new().public.try_into().unwrap();
         let bls_pubkey_compressed_buffer = bincode::serialize(&bls_pubkey_compressed).unwrap();

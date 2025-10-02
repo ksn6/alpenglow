@@ -488,8 +488,12 @@ impl BlockComponent {
 
         match (entries.is_empty(), remaining_bytes.is_empty()) {
             (true, true) => {
-                // Per SIMD-0307: entry count cannot be zero
-                Err(BlockComponentError::EmptyEntries)
+                // Special case: allow exactly 8 zero bytes as empty entry batch
+                if data.len() == ENTRY_COUNT_SIZE {
+                    Ok((Self::EntryBatch(vec![]), ENTRY_COUNT_SIZE))
+                } else {
+                    Err(BlockComponentError::EmptyEntries)
+                }
             }
             (true, false) => {
                 // Zero entries means a marker follows
@@ -1585,15 +1589,15 @@ mod tests {
 
     #[test]
     fn test_block_component_deserialize_eight_zero_bytes() {
-        // Test that [0_u8; 8] (8 zero bytes alone) causes an error
-        // Per SIMD-0307: "Entry batch data starts with an 8 byte value that represents
-        // the number of entries in the batch. This number cannot be zero."
-        // 8 zero bytes indicate a marker should follow, but there's no marker data.
+        // Test that exactly 8 zero bytes is allowed as an empty entry batch
         let data = [0_u8; 8];
         let result = BlockComponent::from_bytes(&data);
 
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), BlockComponentError::EmptyEntries);
+        assert!(result.is_ok());
+        let components = result.unwrap();
+        assert_eq!(components.len(), 1);
+        assert!(components[0].is_entries());
+        assert_eq!(components[0].entries().len(), 0);
     }
 
     #[test]
