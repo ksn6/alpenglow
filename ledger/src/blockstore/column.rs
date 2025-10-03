@@ -280,7 +280,7 @@ pub mod columns {
     pub struct SlotCertificates;
 
     #[derive(Debug)]
-    pub struct UpdateParentMeta;
+    pub struct ParentMeta;
 }
 
 macro_rules! convert_column_index_to_key_bytes {
@@ -1063,7 +1063,7 @@ impl TypedColumn for columns::AlternateMerkleRootMeta {
     type Type = blockstore_meta::MerkleRootMeta;
 }
 
-impl Column for columns::UpdateParentMeta {
+impl Column for columns::ParentMeta {
     type Index = (Slot, BlockLocation);
     // Key size: Slot (8 bytes) + discriminator (1 byte) + optional Hash (32 bytes)
     // Maximum size when BlockLocation::Alternate
@@ -1109,10 +1109,10 @@ impl Column for columns::UpdateParentMeta {
     }
 }
 
-impl ColumnName for columns::UpdateParentMeta {
-    const NAME: &'static str = "update_parent_meta";
+impl ColumnName for columns::ParentMeta {
+    const NAME: &'static str = "parent_meta";
 }
 
-impl TypedColumn for columns::UpdateParentMeta {
-    type Type = blockstore_meta::UpdateParentMeta;
+impl TypedColumn for columns::ParentMeta {
+    type Type = blockstore_meta::ParentMeta;
 }

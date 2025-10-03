@@ -276,7 +276,7 @@ pub struct Blockstore {
     alt_index_cf: LedgerColumn<cf::AlternateIndex>,
     alt_data_shred_cf: LedgerColumn<cf::AlternateShredData>,
     alt_merkle_root_meta_cf: LedgerColumn<cf::AlternateMerkleRootMeta>,
-    update_parent_meta_cf: LedgerColumn<cf::UpdateParentMeta>,
+    parent_meta_cf: LedgerColumn<cf::ParentMeta>,
 
     highest_primary_index_slot: RwLock<Option<Slot>>,
     max_root: AtomicU64,
@@ -326,6 +326,9 @@ struct ShredInsertionTracker<'a> {
     // In-memory map that maintains the dirty copy of the index meta.  It will
     // later be written to `cf::Index` or `cf::AlternateIndex`
     index_working_set: HashMap<(BlockLocation, u64), IndexMetaWorkingSetEntry>,
+    // In-memory map that maintains the dirty copy of the parent meta.  It will
+    // later be written to `cf::UpdateParentMeta`
+    parent_metas: HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
     duplicate_shreds: Vec<PossibleDuplicateShred>,
     // Collection of the current blockstore writes which will be committed
     // atomically.
@@ -344,6 +347,7 @@ impl ShredInsertionTracker<'_> {
             merkle_root_metas: HashMap::new(),
             slot_meta_working_set: HashMap::new(),
             index_working_set: HashMap::new(),
+            parent_metas: HashMap::new(),
             duplicate_shreds: vec![],
             write_batch,
             index_meta_time_us: 0,
@@ -472,7 +476,7 @@ impl Blockstore {
             alt_index_cf,
             alt_data_shred_cf,
             alt_merkle_root_meta_cf,
-            update_parent_meta_cf,
+            parent_meta_cf: update_parent_meta_cf,
 
             highest_primary_index_slot: RwLock::<Option<Slot>>::default(),
             new_shreds_signals: Mutex::default(),
@@ -1375,6 +1379,19 @@ impl Blockstore {
             )?;
         }
 
+        for (&(location, slot), working_parent_meta) in &shred_insertion_tracker.parent_metas {
+            if !working_parent_meta.should_write() {
+                // No need to rewrite the column
+                continue;
+            }
+
+            self.parent_meta_cf.put_in_batch(
+                &mut shred_insertion_tracker.write_batch,
+                (slot, location),
+                working_parent_meta.as_ref(),
+            )?;
+        }
+
         for (&(location, slot), index_working_set_entry) in
             shred_insertion_tracker.index_working_set.iter()
         {
@@ -1930,16 +1947,16 @@ impl Blockstore {
         current_shred: &Shred,
         slot: Slot,
         location: BlockLocation,
-        write_batch: &mut WriteBatch,
         just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
-    ) -> Result<()> {
+        parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
+    ) -> Result<Option<ParentMeta>> {
         // TODO(ksn): rather than reading and writing from the column directly, prefer to use an in
         // memory map and commit it at the end of the shred batch.
         //
         // If UpdateParentMeta already exists, mark the slot as dead and return early
-        if let Ok(Some(_)) = self.update_parent_meta_cf.get((slot, location)) {
+        if let Ok(Some(_)) = self.parent_meta_cf.get((slot, location)) {
             self.set_dead_slot(slot)?;
-            return Ok(());
+            return Ok(None);
         }
 
         let current_index = current_shred.index();
@@ -1990,40 +2007,38 @@ impl Blockstore {
 
         // Process the shred bytes if we have them
         let Some(shred_bytes) = shred_bytes else {
-            return Ok(());
+            return Ok(None);
         };
 
         let Ok(payload) = shred::layout::get_data(&shred_bytes) else {
-            return Ok(());
+            return Ok(None);
         };
 
         // Check if this is a BlockMarker
         if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
-            return Ok(());
+            return Ok(None);
         }
 
         // Try to parse UpdateParent from the payload
         let Some((new_parent_slot, new_parent_block_id)) =
             Self::parse_update_parent_from_data_payload(payload)
         else {
-            return Ok(());
+            return Ok(None);
         };
 
         // First time seeing this UpdateParent
-        let update_parent_meta = UpdateParentMeta {
+        let parent_meta = ParentMeta {
             new_parent_slot,
             new_parent_block_id,
             fec_set_index: target_fec_set_index,
         };
 
         // Store the UpdateParent metadata
-        let _ = self.update_parent_meta_cf.put_in_batch(
-            write_batch,
-            (slot, location),
-            &update_parent_meta,
-        )?;
+        parent_meta_working_set
+            .entry((location, slot))
+            .or_insert(WorkingEntry::Dirty(parent_meta));
 
-        Ok(())
+        Ok(Some(parent_meta))
     }
 
     /// Create an entry to the specified `write_batch` that performs shred
@@ -2069,6 +2084,7 @@ impl Blockstore {
             slot_meta_working_set,
             just_inserted_shreds,
             merkle_root_metas,
+            parent_metas: parent_meta_working_set,
             duplicate_shreds,
             index_meta_time_us,
             erasure_metas,
@@ -2077,7 +2093,13 @@ impl Blockstore {
         } = shred_insertion_tracker;
 
         // Check for UpdateParent metadata
-        self.check_for_update_parent(&shred, slot, location, write_batch, just_inserted_shreds)?;
+        self.check_for_update_parent(
+            &shred,
+            slot,
+            location,
+            just_inserted_shreds,
+            parent_meta_working_set,
+        )?;
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);
@@ -3115,20 +3137,20 @@ impl Blockstore {
     }
 
     /// Get UpdateParentMeta for a specific slot and location
-    pub fn get_update_parent_meta(
+    pub fn get_parent_meta(
         &self,
         slot: Slot,
         location: BlockLocation,
-    ) -> Result<Option<UpdateParentMeta>> {
-        self.update_parent_meta_cf.get((slot, location))
+    ) -> Result<Option<ParentMeta>> {
+        self.parent_meta_cf.get((slot, location))
     }
 
     /// Get all UpdateParentMeta entries for a slot
-    pub fn get_update_parent_metas_for_slot(&self, slot: Slot) -> Result<Vec<UpdateParentMeta>> {
+    pub fn get_parent_metas_for_slot(&self, slot: Slot) -> Result<Vec<ParentMeta>> {
         let mut metas = Vec::new();
 
         // Get entries for BlockLocation::Original
-        let iter = self.update_parent_meta_cf.iter(IteratorMode::From(
+        let iter = self.parent_meta_cf.iter(IteratorMode::From(
             (slot, BlockLocation::Original),
             IteratorDirection::Forward,
         ))?;
@@ -3137,7 +3159,7 @@ impl Blockstore {
             if item_slot != slot {
                 break;
             }
-            let meta: UpdateParentMeta = deserialize(&meta_bytes)?;
+            let meta: ParentMeta = deserialize(&meta_bytes)?;
             metas.push(meta);
         }
 
@@ -12626,32 +12648,29 @@ pub mod tests {
 
         // Test with a shred at the end of an FEC set boundary
         let last_of_fec = DATA_SHREDS_PER_FEC_BLOCK - 1;
-        if shreds.len() > last_of_fec {
-            let mut write_batch = blockstore.get_write_batch().unwrap();
+        let mut working_set = HashMap::new();
+
+        assert!(shreds.len() > last_of_fec);
+
+        let result = {
             let just_inserted_shreds = HashMap::new();
 
-            assert!(blockstore
-                .check_for_update_parent(
-                    &shreds[last_of_fec],
-                    slot,
-                    BlockLocation::Original,
-                    &mut write_batch,
-                    &just_inserted_shreds,
-                )
-                .is_ok());
-
-            blockstore.write_batch(write_batch).unwrap();
-        }
+            blockstore.check_for_update_parent(
+                &shreds[last_of_fec],
+                slot,
+                BlockLocation::Original,
+                &just_inserted_shreds,
+                &mut working_set,
+            )
+        };
 
         // Since we haven't inserted any UpdateParent markers, nothing should be detected
-        let update_parent_meta = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
-            .unwrap();
-        assert!(update_parent_meta.is_none());
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 
     #[test]
-    fn test_update_parent_meta_storage_and_retrieval() {
+    fn test_parent_meta_storage_and_retrieval() {
         // Test that UpdateParentMeta can be stored and retrieved correctly
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
@@ -12660,20 +12679,20 @@ pub mod tests {
         // Test with Original location
         let new_parent_slot = 8;
         let new_parent_block_id = Hash::new_unique();
-        let meta = UpdateParentMeta {
+        let meta = ParentMeta {
             new_parent_slot,
             new_parent_block_id,
             fec_set_index: 1,
         };
 
         blockstore
-            .update_parent_meta_cf
+            .parent_meta_cf
             .put((slot, BlockLocation::Original), &meta)
             .unwrap();
 
         // Retrieve and verify
         let retrieved = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
+            .get_parent_meta(slot, BlockLocation::Original)
             .unwrap();
         assert!(retrieved.is_some());
         let retrieved_meta = retrieved.unwrap();
@@ -12684,19 +12703,19 @@ pub mod tests {
         // Test with Alternate location
         let block_id = Hash::new_unique();
         let location = BlockLocation::Alternate { block_id };
-        let meta2 = UpdateParentMeta {
+        let meta2 = ParentMeta {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
         };
 
         blockstore
-            .update_parent_meta_cf
+            .parent_meta_cf
             .put((slot, location), &meta2)
             .unwrap();
 
         // Retrieve and verify alternate location
-        let retrieved2 = blockstore.get_update_parent_meta(slot, location).unwrap();
+        let retrieved2 = blockstore.get_parent_meta(slot, location).unwrap();
         assert!(retrieved2.is_some());
         let retrieved_meta2 = retrieved2.unwrap();
         assert_eq!(retrieved_meta2.new_parent_slot, 7);
@@ -12704,91 +12723,43 @@ pub mod tests {
     }
 
     #[test]
-    fn test_update_parent_meta_overwrite() {
+    fn test_parent_meta_overwrite() {
         // Test that UpdateParentMeta can be overwritten
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
         let slot = 10;
 
         // Write first meta
-        let meta1 = UpdateParentMeta {
+        let meta1 = ParentMeta {
             new_parent_slot: 8,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 1,
         };
 
         blockstore
-            .update_parent_meta_cf
+            .parent_meta_cf
             .put((slot, BlockLocation::Original), &meta1)
             .unwrap();
 
         // Overwrite with second meta
-        let meta2 = UpdateParentMeta {
+        let meta2 = ParentMeta {
             new_parent_slot: 7,
             new_parent_block_id: Hash::new_unique(),
             fec_set_index: 2,
         };
 
         blockstore
-            .update_parent_meta_cf
+            .parent_meta_cf
             .put((slot, BlockLocation::Original), &meta2)
             .unwrap();
 
         // Retrieve and verify it's the second one
         let retrieved = blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
+            .get_parent_meta(slot, BlockLocation::Original)
             .unwrap();
         assert!(retrieved.is_some());
         let retrieved_meta = retrieved.unwrap();
         assert_eq!(retrieved_meta.new_parent_slot, 7);
         assert_eq!(retrieved_meta.fec_set_index, 2);
-    }
-
-    #[test]
-    fn test_check_for_update_parent_with_different_locations() {
-        // Test that check_for_update_parent works with different BlockLocations
-        let ledger_path = get_tmp_ledger_path_auto_delete!();
-        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
-        let slot = 10;
-        let parent_slot = 9;
-
-        // Create entries
-        let entries = create_ticks(64, 0, Hash::default());
-        let shreds = entries_to_test_shreds(&entries, slot, parent_slot, false, 0);
-
-        // Insert at original location
-        blockstore
-            .insert_shreds(shreds.clone(), None, false)
-            .unwrap();
-
-        // Test with original location
-        let mut write_batch = blockstore.get_write_batch().unwrap();
-        let just_inserted_shreds = HashMap::new();
-
-        assert!(blockstore
-            .check_for_update_parent(
-                &shreds[31],
-                slot,
-                BlockLocation::Original,
-                &mut write_batch,
-                &just_inserted_shreds,
-            )
-            .is_ok());
-
-        blockstore.write_batch(write_batch).unwrap();
-
-        // Should return None since we haven't inserted UpdateParent markers
-        assert!(blockstore
-            .get_update_parent_meta(slot, BlockLocation::Original)
-            .unwrap()
-            .is_none());
-
-        // Test that alternate location also returns None when not populated
-        let block_id = Hash::new_unique();
-        let alt_location = BlockLocation::Alternate { block_id };
-        assert!(blockstore
-            .get_update_parent_meta(slot, alt_location)
-            .unwrap()
-            .is_none());
     }
 }

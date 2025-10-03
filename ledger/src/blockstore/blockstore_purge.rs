@@ -330,7 +330,7 @@ impl Blockstore {
                 .delete_range_in_batch(write_batch, from_slot, to_slot)
                 .is_ok()
             & self
-                .update_parent_meta_cf
+                .parent_meta_cf
                 .delete_range_in_batch(write_batch, from_slot, to_slot)
                 .is_ok();
 
