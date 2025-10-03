@@ -3086,15 +3086,12 @@ impl Blockstore {
             allow_dead_slots,
         )?;
 
-        if slot_entries.is_empty() {
+        let Some(slot_entry) = slot_entries.last() else {
             trace!("do_get_complete_block_with_entries() failed for {slot} (slot not full)");
             return Err(BlockstoreError::SlotUnavailable);
-        }
+        };
 
-        let blockhash = slot_entries
-            .last()
-            .map(|entry| entry.hash)
-            .unwrap_or_else(|| panic!("Rooted slot {slot:?} must have blockhash"));
+        let blockhash = slot_entry.hash;
 
         // Build entries summary if requested
         let mut starting_transaction_index = 0;
