@@ -4123,7 +4123,7 @@ impl Blockstore {
         let Some((&Range { start, .. }, &Range { end, .. })) =
             completed_ranges.first().zip(completed_ranges.last())
         else {
-            return Ok(vec![BlockComponent::default()]);
+            return Ok(vec![]);
         };
         let indices = u64::from(start)..u64::from(end);
         let keys = indices.clone().map(|index| (slot, index));
