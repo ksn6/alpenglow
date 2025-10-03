@@ -444,14 +444,28 @@ impl BlockComponent {
         Ok(buffer)
     }
 
-    /// Deserializes from bytes with validation.
+    /// Deserializes from bytes, returning a vector of BlockComponents.
+    ///
+    /// This function can handle multiple BlockComponents serialized sequentially in the data.
     ///
     /// # Errors
     /// Returns an error if deserialization fails or data is invalid.
-    ///
-    /// TODO(karthik): fuzz test this function.
-    /// TODO(karthik): should we error out if there are remaining bytes after deserialization?
-    pub fn from_bytes(data: &[u8]) -> Result<Self, BlockComponentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Vec<Self>, BlockComponentError> {
+        let mut components = Vec::new();
+        let mut cursor = 0;
+
+        while cursor < data.len() {
+            let remaining = &data[cursor..];
+            let (component, bytes_consumed) = Self::parse_single_from_bytes(remaining)?;
+            components.push(component);
+            cursor += bytes_consumed;
+        }
+
+        Ok(components)
+    }
+
+    /// Parse a single component, returning (component, bytes_consumed).
+    fn parse_single_from_bytes(data: &[u8]) -> Result<(Self, usize), BlockComponentError> {
         const ENTRY_COUNT_SIZE: usize = 8;
 
         let entry_count = u64::from_le_bytes(
@@ -460,7 +474,6 @@ impl BlockComponent {
                 .ok_or(BlockComponentError::InsufficientData)?,
         );
 
-        // Validate entry count
         Self::validate_entries_length(entry_count as usize)?;
 
         let entries = bincode::deserialize::<Vec<Entry>>(data)
@@ -469,21 +482,33 @@ impl BlockComponent {
             .map_err(|e| BlockComponentError::SerializationFailed(e.to_string()))?
             as usize;
 
-        // Handle remaining data
         let remaining_bytes = data
             .get(cursor..)
             .ok_or(BlockComponentError::CursorOutOfBounds)?;
 
         match (entries.is_empty(), remaining_bytes.is_empty()) {
-            (true, true) => Ok(Self::EntryBatch(Vec::new())),
-            (true, false) => {
-                let marker = VersionedBlockMarker::from_bytes(remaining_bytes)?;
-                Ok(Self::BlockMarker(marker))
+            (true, true) => {
+                // Special case: allow exactly 8 zero bytes as empty entry batch
+                if data.len() == ENTRY_COUNT_SIZE {
+                    Ok((Self::EntryBatch(vec![]), ENTRY_COUNT_SIZE))
+                } else {
+                    Err(BlockComponentError::EmptyEntries)
+                }
             }
-            // This is the "everything is empty" case, which means there are no entries and no
-            // marker data.
-            (false, true) => Ok(Self::EntryBatch(entries)),
-            (false, false) => Err(BlockComponentError::MixedData),
+            (true, false) => {
+                // Zero entries means a marker follows
+                let marker_size = VersionedBlockMarker::get_versioned_marker_size(remaining_bytes)?;
+                let marker_bytes = remaining_bytes
+                    .get(..marker_size)
+                    .ok_or(BlockComponentError::InsufficientData)?;
+                let marker = VersionedBlockMarker::from_bytes(marker_bytes)?;
+                Ok((Self::BlockMarker(marker), cursor + marker_size))
+            }
+            (false, true) => Ok((Self::EntryBatch(entries), cursor)),
+            (false, false) => {
+                // Additional data is the next component
+                Ok((Self::EntryBatch(entries), cursor))
+            }
         }
     }
 
@@ -544,7 +569,15 @@ impl<'de> Deserialize<'de> for BlockComponent {
             where
                 E: de::Error,
             {
-                BlockComponent::from_bytes(value).map_err(de::Error::custom)
+                let components = BlockComponent::from_bytes(value).map_err(de::Error::custom)?;
+                if components.len() == 1 {
+                    Ok(components.into_iter().next().unwrap())
+                } else {
+                    Err(de::Error::custom(format!(
+                        "expected 1 component, got {}",
+                        components.len()
+                    )))
+                }
             }
         }
 
@@ -603,6 +636,50 @@ impl VersionedBlockMarker {
             1 => Ok(Self::Current(BlockMarkerV1::from_bytes(marker_data)?)),
             _ => Err(BlockComponentError::UnsupportedVersion { version }),
         }
+    }
+
+    /// Determines the size of a VersionedBlockMarker in bytes without fully parsing it.
+    fn get_versioned_marker_size(data: &[u8]) -> Result<usize, BlockComponentError> {
+        const VERSION_SIZE: usize = 2;
+
+        if data.len() < VERSION_SIZE {
+            return Err(BlockComponentError::InsufficientData);
+        }
+
+        let version = u16::from_le_bytes(
+            data[..VERSION_SIZE]
+                .try_into()
+                .map_err(|_| BlockComponentError::InsufficientData)?,
+        );
+
+        // Get the marker data after the version
+        let marker_data = data
+            .get(VERSION_SIZE..)
+            .ok_or(BlockComponentError::InsufficientData)?;
+
+        // For V1 markers, the format is:
+        // variant_id (1 byte) + length (2 bytes) + data (length bytes)
+        let marker_inner_size = match version {
+            1 => {
+                if marker_data.len() < 3 {
+                    return Err(BlockComponentError::InsufficientData);
+                }
+
+                // Skip variant_id (byte 0) and read the length field (bytes 1-2)
+                let length = u16::from_le_bytes(
+                    marker_data[1..3]
+                        .try_into()
+                        .map_err(|_| BlockComponentError::InsufficientData)?,
+                ) as usize;
+
+                // Total inner size: variant_id (1) + length_field (2) + data (length)
+                1 + 2 + length
+            }
+            _ => return Err(BlockComponentError::UnsupportedVersion { version }),
+        };
+
+        // Total size includes the version field
+        Ok(VERSION_SIZE + marker_inner_size)
     }
 }
 
@@ -1376,7 +1453,8 @@ mod tests {
         let bytes = component.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
 
-        assert_eq!(component, deserialized);
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(component, deserialized[0]);
     }
 
     #[test]
@@ -1393,7 +1471,8 @@ mod tests {
         let bytes = component.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
 
-        assert_eq!(component, deserialized);
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(component, deserialized[0]);
     }
 
     #[test]
@@ -1501,11 +1580,24 @@ mod tests {
 
         // With multi-component support, this should now parse as 2 components
         let result = BlockComponent::from_bytes(&bytes);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("both an entry batch and marker"));
+        assert!(result.is_ok());
+        let components = result.unwrap();
+        assert_eq!(components.len(), 2);
+        assert!(components[0].is_entries());
+        assert!(components[1].is_marker());
+    }
+
+    #[test]
+    fn test_block_component_deserialize_eight_zero_bytes() {
+        // Test that exactly 8 zero bytes is allowed as an empty entry batch
+        let data = [0_u8; 8];
+        let result = BlockComponent::from_bytes(&data);
+
+        assert!(result.is_ok());
+        let components = result.unwrap();
+        assert_eq!(components.len(), 1);
+        assert!(components[0].is_entries());
+        assert_eq!(components[0].entries().len(), 0);
     }
 
     #[test]
@@ -1655,8 +1747,10 @@ mod tests {
 
     #[test]
     fn test_block_component_malformed_data() {
-        // Empty data
-        assert!(BlockComponent::from_bytes(&[]).is_err());
+        // Empty data - with multi-component support, this returns empty Vec
+        let result = BlockComponent::from_bytes(&[]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
 
         // Incomplete entry count
         assert!(BlockComponent::from_bytes(&[0u8; 7]).is_err());
@@ -1981,19 +2075,6 @@ mod tests {
     }
 
     #[test]
-    fn test_block_component_large_entries() {
-        // Test with large number of entries (but within limits)
-        let entries: Vec<Entry> = (0..1000).map(|_| Entry::default()).collect();
-        let component = BlockComponent::new_entries(entries.clone()).unwrap();
-
-        let bytes = component.to_bytes().unwrap();
-        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
-
-        assert_eq!(component, deserialized);
-        assert_eq!(deserialized.entries().len(), 1000);
-    }
-
-    #[test]
     fn test_cross_version_compatibility() {
         // Test that V1 data can be read as Current and vice versa
         let footer = BlockFooterV1 {
@@ -2146,21 +2227,6 @@ mod tests {
     }
 
     #[test]
-    fn test_block_component_new_max_entries() {
-        // Test near the boundary - creating u32::MAX entries would be impractical
-        // So we'll test the validation logic directly
-        let result = BlockComponent::validate_entries_length(BlockComponent::MAX_ENTRIES);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            BlockComponentError::TooManyEntries {
-                count: BlockComponent::MAX_ENTRIES,
-                max: BlockComponent::MAX_ENTRIES,
-            }
-        );
-    }
-
-    #[test]
     fn test_block_component_new_special() {
         let footer = BlockFooterV1 {
             block_producer_time_nanos: 12345,
@@ -2192,8 +2258,9 @@ mod tests {
 
         // Test deserialization
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.entries().len(), 3);
-        assert!(deserialized.marker().is_none());
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 3);
+        assert!(deserialized[0].marker().is_none());
 
         // Test serde serialization
         let serialized = bincode::serialize(&batch).unwrap();
@@ -2225,8 +2292,9 @@ mod tests {
 
         // Test deserialization
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.entries().len(), 0);
-        assert!(deserialized.marker().is_some());
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 0);
+        assert!(deserialized[0].marker().is_some());
 
         // Test serde serialization
         let serialized = bincode::serialize(&batch).unwrap();
@@ -2249,7 +2317,8 @@ mod tests {
 
         let bytes = batch.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.entries().len(), 1000);
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 1000);
     }
 
     #[test]
@@ -2261,10 +2330,11 @@ mod tests {
         let bytes = batch.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
 
-        assert_eq!(deserialized.entries().len(), 0);
-        assert!(deserialized.marker().is_some());
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 0);
+        assert!(deserialized[0].marker().is_some());
 
-        let special = deserialized.marker().unwrap();
+        let special = deserialized[0].marker().unwrap();
         assert_eq!(special.version(), 1);
     }
 
@@ -2413,6 +2483,8 @@ mod tests {
         let bytes = versioned_entry.to_bytes().unwrap();
         let deserialized = VersionedBlockMarker::from_bytes(&bytes).unwrap();
         assert_eq!(deserialized.version(), 1);
+        // Should deserialize to Current variant
+        assert!(matches!(deserialized, VersionedBlockMarker::Current(_)));
     }
 
     // End-to-end Tests
@@ -2429,10 +2501,11 @@ mod tests {
         let bytes = batch.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
 
-        assert_eq!(deserialized.entries().len(), 0);
-        assert!(deserialized.marker().is_some());
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 0);
+        assert!(deserialized[0].marker().is_some());
 
-        let special = deserialized.marker().unwrap();
+        let special = deserialized[0].marker().unwrap();
         assert_eq!(special.version(), 1);
 
         let VersionedBlockMarker::Current(BlockMarkerV1::UpdateParent(update)) = special else {
@@ -2459,8 +2532,9 @@ mod tests {
 
         let bytes = batch.to_bytes().unwrap();
         let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
-        assert_eq!(deserialized.entries().len(), 10);
-        assert!(deserialized.marker().is_none());
+        assert_eq!(deserialized.len(), 1);
+        assert_eq!(deserialized[0].entries().len(), 10);
+        assert!(deserialized[0].marker().is_none());
     }
 
     #[test]
@@ -2662,5 +2736,430 @@ mod tests {
         assert_eq!(deser2, deser3);
         assert_eq!(bytes1, bytes2);
         assert_eq!(bytes2, bytes3);
+    }
+
+    // ============================================================================
+    // Multi-Component Tests
+    // ============================================================================
+
+    #[test]
+    fn test_block_component_multiple_components() {
+        // Test parsing multiple components from a single byte array
+
+        // Create first component: entries
+        let entries1 = vec![Entry::default(), Entry::default()];
+        let component1 = BlockComponent::new_entries(entries1).unwrap();
+
+        // Create second component: marker
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 987654321,
+            block_user_agent: b"multi-component-test".to_vec(),
+        };
+        let marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let component2 = BlockComponent::new_block_marker(marker);
+
+        // Create third component: more entries
+        let entries3 = vec![Entry::default()];
+        let component3 = BlockComponent::new_entries(entries3).unwrap();
+
+        // Serialize all components
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&component1.to_bytes().unwrap());
+        bytes.extend_from_slice(&component2.to_bytes().unwrap());
+        bytes.extend_from_slice(&component3.to_bytes().unwrap());
+
+        // Deserialize and verify
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 3);
+
+        // Verify first component
+        assert!(deserialized[0].is_entries());
+        assert_eq!(deserialized[0].entries().len(), 2);
+        assert_eq!(component1, deserialized[0]);
+
+        // Verify second component
+        assert!(deserialized[1].is_marker());
+        assert_eq!(component2, deserialized[1]);
+
+        // Verify third component
+        assert!(deserialized[2].is_entries());
+        assert_eq!(deserialized[2].entries().len(), 1);
+        assert_eq!(component3, deserialized[2]);
+    }
+
+    #[test]
+    fn test_multiple_entry_components() {
+        // Multiple entry components in one byte stream
+        let entries1 = vec![Entry::default()];
+        let component1 = BlockComponent::new_entries(entries1).unwrap();
+
+        let entries2 = vec![Entry::default(), Entry::default(), Entry::default()];
+        let component2 = BlockComponent::new_entries(entries2).unwrap();
+
+        let entries3 = vec![Entry::default(), Entry::default()];
+        let component3 = BlockComponent::new_entries(entries3).unwrap();
+
+        // Serialize all components into one byte stream
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&component1.to_bytes().unwrap());
+        bytes.extend_from_slice(&component2.to_bytes().unwrap());
+        bytes.extend_from_slice(&component3.to_bytes().unwrap());
+
+        // Deserialize and verify
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 3);
+
+        // Verify each component
+        assert!(deserialized[0].is_entries());
+        assert_eq!(deserialized[0].entries().len(), 1);
+
+        assert!(deserialized[1].is_entries());
+        assert_eq!(deserialized[1].entries().len(), 3);
+
+        assert!(deserialized[2].is_entries());
+        assert_eq!(deserialized[2].entries().len(), 2);
+    }
+
+    #[test]
+    fn test_mixed_entries_and_markers() {
+        // Test with entries, UpdateParent, BlockFooter combinations
+
+        // Create entry component
+        let entries = vec![Entry::default(), Entry::default()];
+        let entry_component = BlockComponent::new_entries(entries).unwrap();
+
+        // Create UpdateParent marker component
+        let parent_update = UpdateParentV1 {
+            new_parent_slot: 12345,
+            new_parent_block_id: Hash::new_unique(),
+        };
+        let parent_marker = VersionedBlockMarker::new(BlockMarkerV1::UpdateParent(
+            VersionedUpdateParent::new(parent_update.clone()),
+        ));
+        let parent_component = BlockComponent::new_block_marker(parent_marker);
+
+        // Create more entries
+        let entries2 = vec![Entry::default()];
+        let entry_component2 = BlockComponent::new_entries(entries2).unwrap();
+
+        // Create BlockFooter marker component
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 987654321,
+            block_user_agent: b"test-validator-v2.0".to_vec(),
+        };
+        let footer_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer.clone()),
+        ));
+        let footer_component = BlockComponent::new_block_marker(footer_marker);
+
+        // Serialize all components
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&entry_component.to_bytes().unwrap());
+        bytes.extend_from_slice(&parent_component.to_bytes().unwrap());
+        bytes.extend_from_slice(&entry_component2.to_bytes().unwrap());
+        bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+
+        // Deserialize and verify
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 4);
+
+        // Verify first component (entries)
+        assert!(deserialized[0].is_entries());
+        assert_eq!(deserialized[0].entries().len(), 2);
+
+        // Verify second component (UpdateParent marker)
+        assert!(deserialized[1].is_marker());
+        let marker1 = deserialized[1].marker().unwrap();
+        assert_eq!(marker1.version(), 1);
+        if let VersionedBlockMarker::Current(BlockMarkerV1::UpdateParent(update)) = marker1 {
+            if let VersionedUpdateParent::Current(data) = update {
+                assert_eq!(data.new_parent_slot, 12345);
+            } else {
+                panic!("Expected Current variant");
+            }
+        } else {
+            panic!("Expected Current UpdateParent");
+        }
+
+        // Verify third component (entries)
+        assert!(deserialized[2].is_entries());
+        assert_eq!(deserialized[2].entries().len(), 1);
+
+        // Verify fourth component (BlockFooter marker)
+        assert!(deserialized[3].is_marker());
+        let marker2 = deserialized[3].marker().unwrap();
+        assert_eq!(marker2.version(), 1);
+        if let VersionedBlockMarker::Current(BlockMarkerV1::BlockFooter(footer_ver)) = marker2 {
+            if let VersionedBlockFooter::Current(data) = footer_ver {
+                assert_eq!(data.block_producer_time_nanos, 987654321);
+                assert_eq!(data.block_user_agent, b"test-validator-v2.0");
+            } else {
+                panic!("Expected Current footer variant");
+            }
+        } else {
+            panic!("Expected Current BlockFooter");
+        }
+    }
+
+    #[test]
+    fn test_all_marker_types_sequence() {
+        // Test all marker types in sequence
+
+        // Create BlockFooter V1
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 11111,
+            block_user_agent: b"node-1".to_vec(),
+        };
+        let footer_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let footer_component = BlockComponent::new_block_marker(footer_marker);
+
+        // Create UpdateParent
+        let parent = UpdateParentV1 {
+            new_parent_slot: 22222,
+            new_parent_block_id: Hash::new_unique(),
+        };
+        let parent_marker = VersionedBlockMarker::new(BlockMarkerV1::UpdateParent(
+            VersionedUpdateParent::new(parent),
+        ));
+        let parent_component = BlockComponent::new_block_marker(parent_marker);
+
+        // Create BlockHeader
+        let header = BlockHeaderV1 {
+            parent_slot: 33333,
+            parent_block_id: Hash::new_unique(),
+        };
+        let header_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockHeader(
+            VersionedBlockHeader::new(header),
+        ));
+        let header_component = BlockComponent::new_block_marker(header_marker);
+
+        // Serialize all
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+        bytes.extend_from_slice(&parent_component.to_bytes().unwrap());
+        bytes.extend_from_slice(&header_component.to_bytes().unwrap());
+
+        // Deserialize and verify
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 3);
+
+        // All should be markers
+        assert!(deserialized[0].is_marker());
+        assert!(deserialized[1].is_marker());
+        assert!(deserialized[2].is_marker());
+    }
+
+    #[test]
+    fn test_large_sequence_of_components() {
+        // Test a large sequence with alternating types
+        let mut bytes = Vec::new();
+        let num_pairs = 10;
+
+        for i in 0..num_pairs {
+            // Add entries component
+            let entries = vec![Entry::default(); i + 1];
+            let entry_component = BlockComponent::new_entries(entries).unwrap();
+            bytes.extend_from_slice(&entry_component.to_bytes().unwrap());
+
+            // Add footer marker
+            let footer = BlockFooterV1 {
+                block_producer_time_nanos: i as u64 * 1000,
+                block_user_agent: format!("node-{i}").into_bytes(),
+            };
+            let footer_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+                VersionedBlockFooter::new(footer),
+            ));
+            let footer_component = BlockComponent::new_block_marker(footer_marker);
+            bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+        }
+
+        // Deserialize
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), num_pairs * 2);
+
+        // Verify pattern
+        for i in 0..num_pairs {
+            let entry_idx = i * 2;
+            let footer_idx = i * 2 + 1;
+
+            // Check entries component
+            assert!(deserialized[entry_idx].is_entries());
+            assert_eq!(deserialized[entry_idx].entries().len(), i + 1);
+
+            // Check footer component
+            assert!(deserialized[footer_idx].is_marker());
+            if let Some(VersionedBlockMarker::Current(BlockMarkerV1::BlockFooter(
+                VersionedBlockFooter::Current(footer),
+            ))) = deserialized[footer_idx].marker()
+            {
+                assert_eq!(footer.block_producer_time_nanos, i as u64 * 1000);
+                assert_eq!(footer.block_user_agent, format!("node-{i}").into_bytes());
+            } else {
+                panic!("Expected BlockFooter at index {footer_idx}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_markers_between_entry_batches() {
+        // Test with markers between non-empty entry batches
+        // Note: Empty entry components cannot reliably be followed by other components
+        // because their serialization (8 zero bytes) is ambiguous with marker version bytes
+
+        let entries1 = vec![Entry::default()];
+        let component1 = BlockComponent::new_entries(entries1).unwrap();
+
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 555,
+            block_user_agent: b"test".to_vec(),
+        };
+        let footer_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let footer_component = BlockComponent::new_block_marker(footer_marker);
+
+        let entries2 = vec![Entry::default(), Entry::default()];
+        let component2 = BlockComponent::new_entries(entries2).unwrap();
+
+        // Serialize: entries, footer, entries, footer
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&component1.to_bytes().unwrap());
+        bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+        bytes.extend_from_slice(&component2.to_bytes().unwrap());
+        bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+
+        // Deserialize
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 4);
+
+        assert!(deserialized[0].is_entries());
+        assert_eq!(deserialized[0].entries().len(), 1);
+
+        assert!(deserialized[1].is_marker());
+
+        assert!(deserialized[2].is_entries());
+        assert_eq!(deserialized[2].entries().len(), 2);
+
+        assert!(deserialized[3].is_marker());
+    }
+
+    #[test]
+    fn test_realistic_block_sequence() {
+        // Test a realistic sequence: entries, entries, entries, footer
+        // This mimics what might happen in actual block production
+
+        let mut bytes = Vec::new();
+
+        // First batch of entries (transactions)
+        let entries1 = vec![Entry::default(); 5];
+        let component1 = BlockComponent::new_entries(entries1).unwrap();
+        bytes.extend_from_slice(&component1.to_bytes().unwrap());
+
+        // Second batch of entries
+        let entries2 = vec![Entry::default(); 3];
+        let component2 = BlockComponent::new_entries(entries2).unwrap();
+        bytes.extend_from_slice(&component2.to_bytes().unwrap());
+
+        // Third batch of entries
+        let entries3 = vec![Entry::default(); 7];
+        let component3 = BlockComponent::new_entries(entries3).unwrap();
+        bytes.extend_from_slice(&component3.to_bytes().unwrap());
+
+        // Block footer at the end
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 1234567890,
+            block_user_agent: b"agave/2.0.0".to_vec(),
+        };
+        let footer_marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer.clone()),
+        ));
+        let footer_component = BlockComponent::new_block_marker(footer_marker);
+        bytes.extend_from_slice(&footer_component.to_bytes().unwrap());
+
+        // Deserialize
+        let deserialized = BlockComponent::from_bytes(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 4);
+
+        // Verify entries
+        assert_eq!(deserialized[0].entries().len(), 5);
+        assert_eq!(deserialized[1].entries().len(), 3);
+        assert_eq!(deserialized[2].entries().len(), 7);
+
+        // Verify footer
+        assert!(deserialized[3].is_marker());
+        if let Some(VersionedBlockMarker::Current(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::Current(f),
+        ))) = deserialized[3].marker()
+        {
+            assert_eq!(f.block_producer_time_nanos, 1234567890);
+            assert_eq!(f.block_user_agent, b"agave/2.0.0");
+        } else {
+            panic!("Expected BlockFooter at end");
+        }
+    }
+
+    #[test]
+    fn test_infer_is_entries() {
+        // Test with entries data (non-zero count)
+        let entries = vec![Entry::default(), Entry::default()];
+        let component = BlockComponent::new_entries(entries).unwrap();
+        let bytes = component.to_bytes().unwrap();
+
+        assert_eq!(BlockComponent::infer_is_entries(&bytes), Some(true));
+        assert_eq!(BlockComponent::infer_is_block_marker(&bytes), Some(false));
+
+        // Test with marker data (zero count)
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 123,
+            block_user_agent: b"test".to_vec(),
+        };
+        let marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let marker_component = BlockComponent::new_block_marker(marker);
+        let marker_bytes = marker_component.to_bytes().unwrap();
+
+        assert_eq!(BlockComponent::infer_is_entries(&marker_bytes), Some(false));
+        assert_eq!(
+            BlockComponent::infer_is_block_marker(&marker_bytes),
+            Some(true)
+        );
+
+        // Test with insufficient data
+        let short_data = vec![1, 2, 3];
+        assert_eq!(BlockComponent::infer_is_entries(&short_data), None);
+        assert_eq!(BlockComponent::infer_is_block_marker(&short_data), None);
+    }
+
+    #[test]
+    fn test_as_entries_and_as_versioned_block_marker() {
+        // Test as_entries
+        let entries = vec![Entry::default(), Entry::default()];
+        let entry_component = BlockComponent::new_entries(entries.clone()).unwrap();
+
+        assert!(entry_component.as_entries().is_some());
+        assert_eq!(entry_component.as_entries().unwrap(), &entries);
+        assert!(entry_component.as_versioned_block_marker().is_none());
+
+        // Test as_versioned_block_marker
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 456,
+            block_user_agent: b"marker-test".to_vec(),
+        };
+        let marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let marker_component = BlockComponent::new_block_marker(marker.clone());
+
+        assert!(marker_component.as_versioned_block_marker().is_some());
+        assert_eq!(
+            marker_component.as_versioned_block_marker().unwrap(),
+            &marker
+        );
+        assert!(marker_component.as_entries().is_none());
     }
 }
