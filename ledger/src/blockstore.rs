@@ -2752,6 +2752,15 @@ impl Blockstore {
             .collect()
     }
 
+    pub fn get_block_footer_timestamp(&self, (slot, block_id): (Slot, Hash)) -> Result<u64> {
+        let result = self
+            .block_footer_meta_cf
+            .get((slot, BlockLocation::Alternate { block_id }))?
+            .expect("blockstores couldn't fetch block footer");
+
+        Ok(result.block_producer_time_nanos)
+    }
+
     #[cfg(test)]
     fn get_data_shreds(
         &self,

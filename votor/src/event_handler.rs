@@ -12,6 +12,7 @@ use {
         voting_service::BLSOp,
         voting_utils::{generate_vote_message, VoteError, VotingContext},
         votor::{SharedContext, Votor},
+        CLOCK_TIMEOUT_MULTIPLIER, DELTA_BLOCK,
     },
     crossbeam_channel::{select, RecvError, SendError},
     parking_lot::RwLock,
@@ -224,6 +225,23 @@ impl EventHandler {
         Ok(())
     }
 
+    fn check_clock(
+        (current_slot, _): (Slot, Hash),
+        (parent_slot, _): (Slot, Hash),
+        current_time: u64,
+        parent_time: u64,
+    ) -> bool {
+        let diff_slots = current_slot.checked_sub(parent_slot).unwrap();
+        let max_diff_time = DELTA_BLOCK
+            .checked_mul(CLOCK_TIMEOUT_MULTIPLIER)
+            .unwrap()
+            .checked_mul(diff_slots as u32)
+            .unwrap();
+        let latest_acceptable_current_time = parent_time + (max_diff_time.as_nanos() as u64);
+
+        parent_time < current_time && current_time <= latest_acceptable_current_time
+    }
+
     fn handle_event(
         event: VotorEvent,
         timer_manager: &RwLock<TimerManager>,
@@ -246,6 +264,24 @@ impl EventHandler {
                 debug_assert!(bank.is_frozen());
                 let (block, parent_block) = Self::get_block_parent_block(&bank);
                 info!("{my_pubkey}: Block {block:?} parent {parent_block:?}");
+
+                // Check timestamps and clock validation
+                let (parent_time, current_time) = match (
+                    ctx.blockstore.get_block_footer_timestamp(parent_block),
+                    ctx.blockstore.get_block_footer_timestamp(block),
+                ) {
+                    (Ok(parent_time), Ok(current_time)) => (parent_time, current_time),
+                    _ => {
+                        Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
+                        return Ok(votes);
+                    }
+                };
+
+                if !Self::check_clock(block, parent_block, current_time, parent_time) {
+                    Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
+                    return Ok(votes);
+                }
+
                 if Self::try_notar(
                     my_pubkey,
                     block,

@@ -118,6 +118,9 @@ const DELTA_TIMEOUT: Duration = DELTA.checked_mul(3).unwrap();
 /// Timeout for standstill detection mechanism.
 const DELTA_STANDSTILL: Duration = Duration::from_millis(10_000);
 
+/// Clock multiplier for timeout bounds
+const CLOCK_TIMEOUT_MULTIPLIER: u32 = 2;
+
 /// Returns the Duration for when the `SkipTimer` should be set for for the given slot in the leader window.
 #[inline]
 pub fn skip_timeout(leader_block_index: usize) -> Duration {
