@@ -225,6 +225,7 @@ impl EventHandler {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn check_clock(
         (current_slot, _): (Slot, Hash),
         (parent_slot, _): (Slot, Hash),
@@ -266,21 +267,21 @@ impl EventHandler {
                 info!("{my_pubkey}: Block {block:?} parent {parent_block:?}");
 
                 // Check timestamps and clock validation
-                let (parent_time, current_time) = match (
-                    ctx.blockstore.get_block_footer_timestamp(parent_block),
-                    ctx.blockstore.get_block_footer_timestamp(block),
-                ) {
-                    (Ok(parent_time), Ok(current_time)) => (parent_time, current_time),
-                    _ => {
-                        Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
-                        return Ok(votes);
-                    }
-                };
+                // let (parent_time, current_time) = match (
+                //     ctx.blockstore.get_block_footer_timestamp(parent_block),
+                //     ctx.blockstore.get_block_footer_timestamp(block),
+                // ) {
+                //     (Ok(parent_time), Ok(current_time)) => (parent_time, current_time),
+                //     _ => {
+                //         Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
+                //         return Ok(votes);
+                //     }
+                // };
 
-                if !Self::check_clock(block, parent_block, current_time, parent_time) {
-                    Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
-                    return Ok(votes);
-                }
+                // if !Self::check_clock(block, parent_block, current_time, parent_time) {
+                //     Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
+                //     return Ok(votes);
+                // }
 
                 if Self::try_notar(
                     my_pubkey,

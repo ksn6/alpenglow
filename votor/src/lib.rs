@@ -119,6 +119,7 @@ const DELTA_TIMEOUT: Duration = DELTA.checked_mul(3).unwrap();
 const DELTA_STANDSTILL: Duration = Duration::from_millis(10_000);
 
 /// Clock multiplier for timeout bounds
+#[allow(dead_code)]
 const CLOCK_TIMEOUT_MULTIPLIER: u32 = 2;
 
 /// Returns the Duration for when the `SkipTimer` should be set for for the given slot in the leader window.

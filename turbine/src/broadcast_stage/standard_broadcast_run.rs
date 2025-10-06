@@ -304,29 +304,29 @@ impl StandardBroadcastRun {
                 keypair,
                 &BlockComponent::Entries(receive_results.entries),
                 reference_tick as u8,
-                false,
+                is_last_in_slot,
                 process_stats,
                 MAX_DATA_SHREDS_PER_SLOT as u32,
                 MAX_CODE_SHREDS_PER_SLOT as u32,
             )
             .unwrap();
 
-        if is_last_in_slot {
-            let footer = self.create_block_footer();
-            let mut footer_shreds = self
-                .block_component_to_shreds(
-                    keypair,
-                    &footer,
-                    reference_tick as u8,
-                    true,
-                    process_stats,
-                    MAX_DATA_SHREDS_PER_SLOT as u32,
-                    MAX_CODE_SHREDS_PER_SLOT as u32,
-                )
-                .unwrap();
+        // if is_last_in_slot {
+        //     let footer = self.create_block_footer();
+        //     let mut footer_shreds = self
+        //         .block_component_to_shreds(
+        //             keypair,
+        //             &footer,
+        //             reference_tick as u8,
+        //             true,
+        //             process_stats,
+        //             MAX_DATA_SHREDS_PER_SLOT as u32,
+        //             MAX_CODE_SHREDS_PER_SLOT as u32,
+        //         )
+        //         .unwrap();
 
-            shreds.append(&mut footer_shreds);
-        }
+        //     shreds.append(&mut footer_shreds);
+        // }
 
         // Insert the first data shred synchronously so that blockstore stores
         // that the leader started this block. This must be done before the
