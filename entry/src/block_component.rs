@@ -498,6 +498,8 @@ impl BlockComponent {
     /// Check if data looks like an entry batch (non-zero entry count). Returns `None` if we can't
     /// deduce whether the data is an entry batch.
     pub fn infer_is_entries(data: &[u8]) -> Option<bool> {
+        // Per documentation, the first 8 bytes denote the length of an entry batch, where a length
+        // of zero indicates a block marker.
         data.get(..8)
             .and_then(|bytes| bytes.try_into().ok())
             .map(|bytes| u64::from_le_bytes(bytes) != 0)
