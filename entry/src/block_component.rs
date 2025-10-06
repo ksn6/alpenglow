@@ -495,7 +495,8 @@ impl BlockComponent {
         }
     }
 
-    /// Check if data looks like an entry batch (non-zero entry count).
+    /// Check if data looks like an entry batch (non-zero entry count). Returns `None` if we can't
+    /// deduce whether the data is an entry batch.
     pub fn infer_is_entries(data: &[u8]) -> Option<bool> {
         data.get(..8)
             .and_then(|bytes| bytes.try_into().ok())
