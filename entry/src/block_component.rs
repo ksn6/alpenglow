@@ -372,6 +372,11 @@ impl BlockComponent {
         Self::BlockMarker(marker)
     }
 
+    /// Returns true if this component contains entries.
+    pub const fn is_entries(&self) -> bool {
+        matches!(self, Self::Entries(_))
+    }
+
     /// Returns a slice of entries in this component.
     pub fn entries(&self) -> &[Entry] {
         match self {
@@ -388,17 +393,20 @@ impl BlockComponent {
         }
     }
 
+    /// Get entries if this is an entry batch.
+    pub fn as_entries(&self) -> Option<&Vec<Entry>> {
+        match self {
+            Self::Entries(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
     /// Returns the special marker if present.
     pub const fn marker(&self) -> Option<&VersionedBlockMarker> {
         match self {
             Self::Entries(_) => None,
             Self::BlockMarker(marker) => Some(marker),
         }
-    }
-
-    /// Returns true if this component contains entries.
-    pub const fn is_entries(&self) -> bool {
-        matches!(self, Self::Entries(_))
     }
 
     /// Returns true if this component contains a special marker.
@@ -497,14 +505,6 @@ impl BlockComponent {
     /// Check if data looks like a block marker (zero entry count).
     pub fn infer_is_block_marker(data: &[u8]) -> Option<bool> {
         Self::infer_is_entries(data).map(|is_entries| !is_entries)
-    }
-
-    /// Get entries if this is an entry batch.
-    pub fn as_entries(&self) -> Option<&Vec<Entry>> {
-        match self {
-            Self::Entries(entries) => Some(entries),
-            _ => None,
-        }
     }
 
     /// Get marker if this is a block marker.
@@ -2469,5 +2469,40 @@ mod tests {
         assert_eq!(deser2, deser3);
         assert_eq!(bytes1, bytes2);
         assert_eq!(bytes2, bytes3);
+    }
+
+    #[test]
+    fn test_infer_is_entries_is_block_marker() {
+        // Test with entries data (non-zero entry count)
+        let entries = create_mock_entries(1);
+        let component = BlockComponent::new_entries(entries).unwrap();
+        let bytes = component.to_bytes().unwrap();
+        assert_eq!(BlockComponent::infer_is_entries(&bytes), Some(true));
+        assert_eq!(BlockComponent::infer_is_block_marker(&bytes), Some(false));
+
+        // Test with marker data (zero entry count)
+        let footer = BlockFooterV1 {
+            block_producer_time_nanos: 123,
+            block_user_agent: b"test".to_vec(),
+        };
+        let marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
+            VersionedBlockFooter::new(footer),
+        ));
+        let component = BlockComponent::new_block_marker(marker);
+        let bytes = component.to_bytes().unwrap();
+        assert_eq!(BlockComponent::infer_is_entries(&bytes), Some(false));
+        assert_eq!(BlockComponent::infer_is_block_marker(&bytes), Some(true));
+
+        // Test with empty entries (zero entry count)
+        let component = BlockComponent::default();
+        let bytes = component.to_bytes().unwrap();
+        assert_eq!(BlockComponent::infer_is_entries(&bytes), Some(false));
+        assert_eq!(BlockComponent::infer_is_block_marker(&bytes), Some(true));
+
+        // Test with insufficient data
+        assert_eq!(BlockComponent::infer_is_entries(&[1, 2, 3]), None);
+        assert_eq!(BlockComponent::infer_is_entries(&[]), None);
+        assert_eq!(BlockComponent::infer_is_block_marker(&[1, 2, 3]), None);
+        assert_eq!(BlockComponent::infer_is_block_marker(&[]), None);
     }
 }
