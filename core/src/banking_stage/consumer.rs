@@ -529,7 +529,7 @@ mod tests {
         },
         solana_nonce::{self as nonce, state::DurableNonce},
         solana_nonce_account::verify_nonce_account,
-        solana_poh::poh_recorder::{PohRecorder, Record},
+        solana_poh::poh_recorder::{EntryMarker, PohRecorder, Record},
         solana_poh_config::PohConfig,
         solana_pubkey::Pubkey,
         solana_rpc::transaction_status_service::TransactionStatusService,
@@ -728,7 +728,13 @@ mod tests {
 
         let mut done = false;
         // read entries until I find mine, might be ticks...
-        while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+        while let Ok((_bank, (entry_marker, _tick_height))) = entry_receiver.recv() {
+            // Extract entry from EntryMarker, skip markers
+            let entry = match entry_marker {
+                EntryMarker::Entry(entry) => entry,
+                EntryMarker::Marker(_) => continue,
+            };
+
             if !entry.is_tick() {
                 trace!("got entry");
                 assert_eq!(entry.transactions.len(), transactions.len());
@@ -924,7 +930,13 @@ mod tests {
 
         let mut done = false;
         // read entries until I find mine, might be ticks...
-        while let Ok((_bank, (entry, _tick_height))) = entry_receiver.recv() {
+        while let Ok((_bank, (entry_marker, _tick_height))) = entry_receiver.recv() {
+            // Extract entry from EntryMarker, skip markers
+            let entry = match entry_marker {
+                EntryMarker::Entry(entry) => entry,
+                EntryMarker::Marker(_) => continue,
+            };
+
             if !entry.is_tick() {
                 assert_eq!(entry.transactions.len(), transactions.len());
                 done = true;

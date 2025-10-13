@@ -2732,7 +2732,7 @@ mod tests {
             create_new_tmp_ledger_auto_delete,
             leader_schedule_cache::LeaderScheduleCache,
         },
-        solana_poh::poh_recorder::create_test_recorder_with_index_tracking,
+        solana_poh::poh_recorder::{create_test_recorder_with_index_tracking, EntryMarker},
         solana_pubkey::Pubkey,
         solana_runtime::{
             bank::Bank,
@@ -4601,7 +4601,7 @@ mod tests {
                 );
                 assert_matches!(
                     signal_receiver.try_recv(),
-                    Ok((_, (solana_entry::entry::Entry {transactions, ..} , _)))
+                    Ok((_, (EntryMarker::Entry(solana_entry::entry::Entry {transactions, ..}), _)))
                         if transactions == vec![tx.to_versioned_transaction()]
                 );
             } else {

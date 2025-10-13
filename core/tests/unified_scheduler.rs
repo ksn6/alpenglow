@@ -25,7 +25,7 @@ use {
         genesis_utils::create_genesis_config, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_perf::packet::to_packet_batches,
-    solana_poh::poh_recorder::create_test_recorder,
+    solana_poh::poh_recorder::{create_test_recorder, EntryMarker},
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, genesis_utils::GenesisConfigInfo,
@@ -295,8 +295,13 @@ fn test_scheduler_producing_blocks() {
     // Verify transactions are committed and poh-recorded
     assert_eq!(tpu_bank.transaction_count(), 1);
     assert_matches!(
-        signal_receiver.into_iter().find(|(_, (entry, _))| !entry.is_tick()),
-        Some((_, (Entry {transactions, ..}, _))) if transactions == [tx.to_versioned_transaction()]
+        signal_receiver.into_iter().find(|(_, (entry_marker, _))| {
+            match entry_marker {
+                EntryMarker::Entry(entry) => !entry.is_tick(),
+                EntryMarker::Marker(_) => false,
+            }
+        }),
+        Some((_, (EntryMarker::Entry(Entry {transactions, ..}), _))) if transactions == [tx.to_versioned_transaction()]
     );
 
     // Stop things.

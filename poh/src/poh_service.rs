@@ -479,7 +479,10 @@ impl PohService {
 mod tests {
     use {
         super::*,
-        crate::{poh_controller::PohController, poh_recorder::PohRecorderError::MaxHeightReached},
+        crate::{
+            poh_controller::PohController,
+            poh_recorder::{EntryMarker, PohRecorderError::MaxHeightReached},
+        },
         crossbeam_channel::unbounded,
         rand::{thread_rng, Rng},
         solana_clock::{DEFAULT_HASHES_PER_TICK, DEFAULT_MS_PER_SLOT},
@@ -633,9 +636,15 @@ mod tests {
 
         let time = Instant::now();
         while run_time != 0 || need_tick || need_entry || need_partial {
-            let (_bank, (entry, _tick_height)) = entry_receiver
+            let (_bank, (entry_marker, _tick_height)) = entry_receiver
                 .recv_timeout(Duration::from_millis(DEFAULT_MS_PER_SLOT))
                 .expect("Expected to receive an entry");
+
+            // Skip markers, only process entries
+            let entry = match entry_marker {
+                EntryMarker::Entry(entry) => entry,
+                EntryMarker::Marker(_) => continue,
+            };
 
             if entry.is_tick() {
                 num_ticks += 1;

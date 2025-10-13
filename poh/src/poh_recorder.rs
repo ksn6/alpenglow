@@ -22,6 +22,7 @@ use {
     log::*,
     solana_clock::{Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::{
+        block_component::{BlockComponent, VersionedBlockMarker},
         entry::Entry,
         poh::{Poh, PohEntry},
     },
@@ -60,7 +61,86 @@ pub enum PohRecorderError {
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
 
-pub type WorkingBankEntry = (Arc<Bank>, (Entry, u64));
+#[derive(Clone, Debug)]
+pub enum EntryMarker {
+    Entry(Entry),
+    Marker(VersionedBlockMarker),
+}
+
+impl EntryMarker {
+    pub fn new_entry(entry: Entry) -> Self {
+        EntryMarker::Entry(entry)
+    }
+
+    pub fn new_marker(marker: VersionedBlockMarker) -> Self {
+        EntryMarker::Marker(marker)
+    }
+
+    pub fn into_entry(self) -> Option<Entry> {
+        match self {
+            EntryMarker::Entry(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub fn as_entry(&self) -> Option<&Entry> {
+        match self {
+            EntryMarker::Entry(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub fn into_marker(self) -> Option<VersionedBlockMarker> {
+        match self {
+            EntryMarker::Marker(marker) => Some(marker),
+            _ => None,
+        }
+    }
+
+    pub fn as_marker(&self) -> Option<&VersionedBlockMarker> {
+        match self {
+            EntryMarker::Marker(marker) => Some(marker),
+            _ => None,
+        }
+    }
+}
+
+impl From<Entry> for EntryMarker {
+    fn from(entry: Entry) -> Self {
+        EntryMarker::Entry(entry)
+    }
+}
+
+impl From<VersionedBlockMarker> for EntryMarker {
+    fn from(marker: VersionedBlockMarker) -> Self {
+        EntryMarker::Marker(marker)
+    }
+}
+
+impl From<BlockComponent> for EntryMarker {
+    fn from(component: BlockComponent) -> Self {
+        match component {
+            BlockComponent::EntryBatch(entries) => {
+                if entries.len() != 1 {
+                    panic!("BlockComponent::EntryBatch must contain exactly one entry");
+                }
+                EntryMarker::Entry(entries[0].clone())
+            }
+            BlockComponent::BlockMarker(marker) => EntryMarker::Marker(marker),
+        }
+    }
+}
+
+impl From<EntryMarker> for BlockComponent {
+    fn from(entry_marker: EntryMarker) -> Self {
+        match entry_marker {
+            EntryMarker::Entry(entry) => BlockComponent::EntryBatch(vec![entry]),
+            EntryMarker::Marker(marker) => BlockComponent::BlockMarker(marker),
+        }
+    }
+}
+
+pub type WorkingBankEntry = (Arc<Bank>, (EntryMarker, u64));
 
 // Sends the Result of the record operation, including the index in the slot of the first
 // transaction, if being tracked by WorkingBank
@@ -375,7 +455,8 @@ impl PohRecorder {
                                     num_hashes: entry.num_hashes,
                                     hash: entry.hash,
                                     transactions,
-                                },
+                                }
+                                .into(),
                                 tick_height, // `record_batches` guarantees that mixins are **not** split across ticks.
                             ),
                         )));
@@ -590,11 +671,14 @@ impl PohRecorder {
                 entry_count,
             );
 
-            for tick in &self.tick_cache[..entry_count] {
-                working_bank.bank.register_tick(&tick.0.hash);
+            for (entry, tick_height) in &self.tick_cache[..entry_count] {
+                working_bank.bank.register_tick(&entry.hash);
+
+                let tick = (entry.clone().into(), *tick_height);
+
                 send_result = self
                     .working_bank_sender
-                    .send((working_bank.bank.clone(), tick.clone()));
+                    .send((working_bank.bank.clone(), tick));
                 if send_result.is_err() {
                     break;
                 }
@@ -1500,11 +1584,11 @@ mod tests {
         //tick in the cache + entry
         for _ in 0..min_tick_height {
             let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
-            assert!(e.is_tick());
+            assert!(e.as_entry().map(|e| e.is_tick()).unwrap());
         }
 
         let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
-        assert!(!e.is_tick());
+        assert!(!e.as_entry().map(|e| e.is_tick()).unwrap());
     }
 
     #[test]
@@ -1539,7 +1623,7 @@ mod tests {
             .is_err());
         for _ in 0..num_ticks_to_max {
             let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
-            assert!(entry.is_tick());
+            assert!(entry.as_entry().map(|e| e.is_tick()).unwrap());
         }
     }
 

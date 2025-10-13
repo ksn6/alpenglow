@@ -604,6 +604,7 @@ pub mod test {
             get_tmp_ledger_path_auto_delete,
             shred::{max_ticks_per_n_shreds, ProcessShredsStats, ReedSolomonCache, Shredder},
         },
+        solana_poh::poh_recorder::EntryMarker,
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         std::{
@@ -818,7 +819,7 @@ pub mod test {
             let ticks = create_ticks(max_tick_height - start_tick_height, 0, Hash::default());
             for (i, tick) in ticks.into_iter().enumerate() {
                 entry_sender
-                    .send((bank.clone(), (tick, i as u64 + 1)))
+                    .send((bank.clone(), (EntryMarker::Entry(tick), i as u64 + 1)))
                     .expect("Expect successful send to broadcast service");
             }
         }
