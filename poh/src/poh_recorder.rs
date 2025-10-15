@@ -12,7 +12,6 @@
 //!
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-use solana_entry::block_component::{BlockHeaderV1, BlockMarkerV1, VersionedBlockHeader};
 use {
     crate::{
         poh_controller::PohController, poh_service::PohService,
@@ -23,7 +22,10 @@ use {
     log::*,
     solana_clock::{Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::{
-        block_component::{BlockComponent, VersionedBlockMarker},
+        block_component::{
+            BlockComponent, BlockHeaderV1, BlockMarkerV1, VersionedBlockHeader,
+            VersionedBlockMarker,
+        },
         entry::Entry,
         poh::{Poh, PohEntry},
     },
