@@ -4599,6 +4599,13 @@ mod tests {
                         None, // no work id
                     )))
                 );
+
+                // Drain block header first
+                assert_matches!(
+                    signal_receiver.try_recv(),
+                    Ok((_, (EntryMarker::Marker(_), _)))
+                );
+
                 assert_matches!(
                     signal_receiver.try_recv(),
                     Ok((_, (EntryMarker::Entry(solana_entry::entry::Entry {transactions, ..}), _)))
@@ -4609,6 +4616,14 @@ mod tests {
                 assert_eq!(bank.transaction_count(), 0);
                 assert_eq!(bank.transaction_error_count(), 0);
                 assert_matches!(receiver.try_recv(), Err(_));
+
+                // Drain block header first
+                assert_matches!(
+                    signal_receiver.try_recv(),
+                    Ok((_, (EntryMarker::Marker(_), _)))
+                );
+
+                // Now no more entries should be present
                 assert_matches!(signal_receiver.try_recv(), Err(_));
             }
         } else {
