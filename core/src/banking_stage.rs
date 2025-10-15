@@ -1135,6 +1135,11 @@ mod tests {
             .write()
             .unwrap()
             .set_bank_for_test(bank.clone());
+
+        // Drain block header that was sent when set_bank was called
+        let (_bank, (header, _tick_height)) = entry_receiver.recv().unwrap();
+        assert!(matches!(header, EntryMarker::Marker(_)));
+
         let pubkey = solana_pubkey::new_rand();
         let keypair2 = Keypair::new();
         let pubkey2 = solana_pubkey::new_rand();
