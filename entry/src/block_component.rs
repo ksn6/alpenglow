@@ -3207,4 +3207,96 @@ mod tests {
         );
         assert!(marker_component.as_entry_batch().is_none());
     }
+
+    #[test]
+    fn test_to_bytes_multiple_empty() {
+        // Empty slice
+        let empty: Vec<BlockComponent> = vec![];
+        let bytes = BlockComponent::to_bytes_multiple(&empty).unwrap();
+        assert!(bytes.is_empty());
+        let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 0);
+    }
+
+    #[test]
+    fn test_to_bytes_multiple_entry_batches() {
+        // Multiple entry batches
+        let components = vec![
+            BlockComponent::new_entry_batch(create_mock_entry_batch(3)).unwrap(),
+            BlockComponent::new_entry_batch(create_mock_entry_batch(5)).unwrap(),
+            BlockComponent::new_entry_batch(create_mock_entry_batch(2)).unwrap(),
+        ];
+        let bytes = BlockComponent::to_bytes_multiple(&components).unwrap();
+        let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 3);
+        assert_eq!(deserialized[0].entry_batch().len(), 3);
+        assert_eq!(deserialized[1].entry_batch().len(), 5);
+        assert_eq!(deserialized[2].entry_batch().len(), 2);
+
+        // Round-trip equality
+        assert_eq!(components, deserialized);
+    }
+
+    #[test]
+    fn test_to_bytes_multiple_markers() {
+        // Multiple markers
+        let components = vec![
+            BlockComponent::new_block_marker(VersionedBlockMarker::new(
+                BlockMarkerV1::BlockFooter(VersionedBlockFooter::new(BlockFooterV1 {
+                    block_producer_time_nanos: 111,
+                    block_user_agent: b"node1".to_vec(),
+                })),
+            )),
+            BlockComponent::new_block_marker(VersionedBlockMarker::new(
+                BlockMarkerV1::UpdateParent(VersionedUpdateParent::new(
+                    create_parent_ready_update_with_data(42, Hash::new_unique()),
+                )),
+            )),
+            BlockComponent::new_block_marker(VersionedBlockMarker::new(
+                BlockMarkerV1::BlockHeader(VersionedBlockHeader::new(BlockHeaderV1 {
+                    parent_slot: 100,
+                    parent_block_id: Hash::new_unique(),
+                })),
+            )),
+        ];
+        let bytes = BlockComponent::to_bytes_multiple(&components).unwrap();
+        let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 3);
+        assert!(deserialized.iter().all(|c| c.is_marker()));
+
+        // Round-trip equality
+        assert_eq!(components, deserialized);
+    }
+
+    #[test]
+    fn test_to_bytes_multiple_mixed() {
+        // Mixed: entries and markers
+        let components = vec![
+            BlockComponent::new_entry_batch(create_mock_entry_batch(4)).unwrap(),
+            BlockComponent::new_block_marker(VersionedBlockMarker::new(
+                BlockMarkerV1::UpdateParent(VersionedUpdateParent::new(
+                    create_parent_ready_update(),
+                )),
+            )),
+            BlockComponent::new_entry_batch(create_mock_entry_batch(1)).unwrap(),
+            BlockComponent::new_block_marker(VersionedBlockMarker::new(
+                BlockMarkerV1::BlockFooter(VersionedBlockFooter::new(BlockFooterV1 {
+                    block_producer_time_nanos: 999,
+                    block_user_agent: b"test".to_vec(),
+                })),
+            )),
+        ];
+        let bytes = BlockComponent::to_bytes_multiple(&components).unwrap();
+        let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
+        assert_eq!(deserialized.len(), 4);
+        assert!(deserialized[0].is_entry_batch());
+        assert!(deserialized[1].is_marker());
+        assert!(deserialized[2].is_entry_batch());
+        assert!(deserialized[3].is_marker());
+        assert_eq!(deserialized[0].entry_batch().len(), 4);
+        assert_eq!(deserialized[2].entry_batch().len(), 1);
+
+        // Round-trip equality
+        assert_eq!(components, deserialized);
+    }
 }
