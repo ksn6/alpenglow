@@ -12,6 +12,7 @@
 //!
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_entry::block_component::{BlockHeaderV1, BlockMarkerV1, VersionedBlockHeader};
 use {
     crate::{
         poh_controller::PohController, poh_service::PohService,
@@ -530,6 +531,22 @@ impl PohRecorder {
         }
     }
 
+    fn produce_block_header(&mut self, bank: &Arc<Bank>) {
+        let block_header = BlockHeaderV1 {
+            parent_slot: bank.parent_slot(),
+            parent_block_id: bank.parent_hash(),
+        };
+
+        let versioned_header = VersionedBlockHeader::Current(block_header);
+        let block_marker = BlockMarkerV1::BlockHeader(versioned_header);
+        let versioned_marker = VersionedBlockMarker::Current(block_marker);
+        let entry_marker = EntryMarker::Marker(versioned_marker);
+
+        let working_bank_entry = (bank.clone(), (entry_marker, bank.tick_height()));
+
+        self.working_bank_sender.send(working_bank_entry).unwrap();
+    }
+
     pub fn set_bank(&mut self, bank: BankWithScheduler) {
         assert!(self.working_bank.is_none());
 
@@ -557,8 +574,12 @@ impl PohRecorder {
             }
         }
 
+        // Produce the block header
+        let bank = working_bank.bank.clone();
+        self.produce_block_header(&bank);
+
         // `shared_working_bank` and `working_bank` must be kept consistent.
-        self.shared_working_bank.store(working_bank.bank.clone());
+        self.shared_working_bank.store(bank);
         self.working_bank = Some(working_bank);
 
         // TODO: adjust the working_bank.start time based on number of ticks
@@ -1028,6 +1049,13 @@ impl PohRecorder {
             let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true));
             self.metrics.flush_cache_tick_us += flush_cache_and_tick_us;
         }
+    }
+
+    pub fn send_component(
+        &mut self,
+        wbe: WorkingBankEntry,
+    ) -> std::result::Result<(), SendError<WorkingBankEntry>> {
+        self.working_bank_sender.send(wbe)
     }
 
     pub fn migrate_to_alpenglow_poh(&mut self) {

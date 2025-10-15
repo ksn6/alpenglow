@@ -9,6 +9,9 @@ use {
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_clock::Slot,
+    solana_entry::block_component::{
+        BlockComponent, BlockFooterV1, BlockMarkerV1, VersionedBlockFooter, VersionedBlockMarker,
+    },
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         blockstore::Blockstore, leader_schedule_cache::LeaderScheduleCache,
@@ -16,7 +19,9 @@ use {
     },
     solana_measure::measure::Measure,
     solana_metrics::datapoint_info,
-    solana_poh::poh_recorder::{PohRecorder, Record, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
+    solana_poh::poh_recorder::{
+        EntryMarker, PohRecorder, Record, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS,
+    },
     solana_pubkey::Pubkey,
     solana_rpc::{rpc_subscriptions::RpcSubscriptions, slot_status_notifier::SlotStatusNotifier},
     solana_runtime::{
@@ -24,6 +29,7 @@ use {
         bank_forks::BankForks,
     },
     solana_time_utils::timestamp,
+    solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo, votor::LeaderWindowNotifier},
     std::{
         sync::{
@@ -31,7 +37,7 @@ use {
             Arc, Condvar, Mutex, RwLock,
         },
         thread,
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     },
     thiserror::Error,
 };
@@ -342,6 +348,24 @@ fn start_receive_and_record_loop(
     }
 }
 
+fn produce_block_footer() -> BlockComponent {
+    let block_producer_time_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+
+    let footer = BlockFooterV1 {
+        block_producer_time_nanos,
+        block_user_agent: format!("agave/{}", version!()).into_bytes(),
+    };
+
+    let footer = VersionedBlockFooter::Current(footer);
+    let footer = BlockMarkerV1::BlockFooter(footer);
+    let footer = VersionedBlockMarker::Current(footer);
+
+    BlockComponent::BlockMarker(footer)
+}
+
 /// The block creation loop.
 ///
 /// The `votor::consensus_pool_service` tracks when it is our leader window, and populates
@@ -487,15 +511,29 @@ pub fn start_loop(config: BlockCreationLoopConfig) {
                         .bank_timeout_completion_elapsed_hist
                         .increment(bank_completion_measure.as_us());
 
-                    let max_tick_height = bank.max_tick_height();
+                    // Produce the block footer
+                    let footer = produce_block_footer();
+                    let footer = (
+                        bank.clone(),
+                        (
+                            EntryMarker::Marker(footer.as_marker().cloned().unwrap()),
+                            w_poh_recorder.tick_height(),
+                        ),
+                    );
+
+                    w_poh_recorder.send_component(footer).unwrap();
+
                     // Set the tick height for the bank to max_tick_height - 1, so that PohRecorder::flush_cache()
                     // will properly increment the tick_height to max_tick_height.
+                    let max_tick_height = bank.max_tick_height();
                     bank.set_tick_height(max_tick_height - 1);
+
                     // Write the single tick for this slot
                     // TODO: handle migration slot because we need to provide the PoH
                     // for slots from the previous epoch, but `tick_alpenglow()` will
                     // delete those ticks from the cache
                     drop(bank);
+
                     w_poh_recorder.tick_alpenglow(max_tick_height);
                 } else {
                     trace!("{my_pubkey}: {slot} reached max tick height, moving to next block");
