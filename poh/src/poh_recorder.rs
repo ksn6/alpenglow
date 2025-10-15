@@ -1430,6 +1430,12 @@ mod tests {
         //poh_recorder.tick height == working bank's min_tick_height,
         // so no ticks should have been flushed yet
         assert_eq!(poh_recorder.tick_cache.last().unwrap().1, num_new_ticks);
+
+        // Drain block header that was sent when set_bank was called
+        let (_bank, (header, _tick_height)) = entry_receiver.try_recv().unwrap();
+        assert!(header.as_marker().is_some());
+
+        // No ticks should have been flushed yet
         assert!(entry_receiver.try_recv().is_err());
 
         // all ticks are sent after height > min
@@ -1489,7 +1495,8 @@ mod tests {
 
         // Should only flush up to bank's max tick height, despite the tick cache
         // having many more entries
-        assert_eq!(num_entries, bank.max_tick_height());
+        // +1 for block header
+        assert_eq!(num_entries, bank.max_tick_height() + 1);
     }
 
     #[test]
@@ -1528,6 +1535,12 @@ mod tests {
             poh_recorder.record(bank1.slot(), vec![h1], vec![vec![tx.into()]]),
             Err(PohRecorderError::MinHeightNotReached)
         );
+
+        // Drain block header first
+        let (_bank, (header, _tick_height)) = entry_receiver.try_recv().unwrap();
+        assert!(header.as_marker().is_some());
+
+        // No more entries should be present
         assert!(entry_receiver.try_recv().is_err());
     }
 
@@ -1611,6 +1624,10 @@ mod tests {
             .is_ok());
         assert_eq!(poh_recorder.tick_cache.len(), 0);
 
+        // Drain block header first
+        let (_bank, (header, _tick_height)) = entry_receiver.recv().unwrap();
+        assert!(header.as_marker().is_some());
+
         //tick in the cache + entry
         for _ in 0..min_tick_height {
             let (_bank, (e, _tick_height)) = entry_receiver.recv().unwrap();
@@ -1651,6 +1668,11 @@ mod tests {
         assert!(poh_recorder
             .record(bank.slot(), vec![h1], vec![vec![tx.into()]])
             .is_err());
+
+        // Drain block header first
+        let (_bank, (header, _tick_height)) = entry_receiver.recv().unwrap();
+        assert!(header.as_marker().is_some());
+
         for _ in 0..num_ticks_to_max {
             let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
             assert!(entry.as_entry().map(|e| e.is_tick()).unwrap());
