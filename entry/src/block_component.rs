@@ -496,25 +496,6 @@ impl BlockComponent {
     pub fn from_bytes_multiple(data: &[u8]) -> Result<Vec<Self>, BlockComponentError> {
         let mut components = Vec::new();
         let mut cursor = 0;
-<<<<<<< HEAD
-=======
-
-        while cursor < data.len() {
-            let remaining = &data[cursor..];
-            let (component, bytes_consumed) = Self::from_bytes(remaining)?;
-            components.push(component);
-            cursor += bytes_consumed;
-        }
-
-        assert_eq!(cursor, data.len());
-
-        Ok(components)
-    }
-
-    /// Parse a single component, returning (component, bytes_consumed).
-    pub fn from_bytes(data: &[u8]) -> Result<(Self, usize), BlockComponentError> {
-        const ENTRY_COUNT_SIZE: usize = 8;
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
 
         while cursor < data.len() {
             let remaining = &data[cursor..];
@@ -695,11 +676,6 @@ impl VersionedBlockMarker {
 
     /// Deserializes from bytes, creating appropriate variant based on version.
     fn from_bytes(data: &[u8]) -> Result<Self, BlockComponentError> {
-<<<<<<< HEAD
-=======
-        const VERSION_SIZE: usize = std::mem::size_of::<u16>();
-
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
         let version = u16::from_le_bytes(
             data.get(..Self::VERSION_SIZE)
                 .and_then(|bytes| bytes.try_into().ok())
@@ -716,33 +692,19 @@ impl VersionedBlockMarker {
 
     /// Determines the size of a VersionedBlockMarker in bytes without fully parsing it.
     fn get_versioned_marker_size(data: &[u8]) -> Result<usize, BlockComponentError> {
-<<<<<<< HEAD
         if data.len() < Self::VERSION_SIZE {
-=======
-        const VERSION_SIZE: usize = 2;
-
-        if data.len() < VERSION_SIZE {
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
             return Err(BlockComponentError::InsufficientData);
         }
 
         let version = u16::from_le_bytes(
-<<<<<<< HEAD
             data[..Self::VERSION_SIZE]
-=======
-            data[..VERSION_SIZE]
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
                 .try_into()
                 .map_err(|_| BlockComponentError::InsufficientData)?,
         );
 
         // Get the marker data after the version
         let marker_data = data
-<<<<<<< HEAD
             .get(Self::VERSION_SIZE..)
-=======
-            .get(VERSION_SIZE..)
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
             .ok_or(BlockComponentError::InsufficientData)?;
 
         // For V1 markers, the format is:
@@ -767,11 +729,7 @@ impl VersionedBlockMarker {
         };
 
         // Total size includes the version field
-<<<<<<< HEAD
         Ok(Self::VERSION_SIZE + marker_inner_size)
-=======
-        Ok(VERSION_SIZE + marker_inner_size)
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
     }
 
     /// Returns the serialized size in bytes without actually serializing.
@@ -2489,10 +2447,6 @@ mod tests {
         // Test deserialization
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
         assert_eq!(deserialized.len(), 1);
-<<<<<<< HEAD
-=======
-        assert_eq!(deserialized[0].entry_batch().len(), 0);
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
         assert!(deserialized[0].as_marker().is_some());
 
         // Test serde serialization
@@ -2529,10 +2483,6 @@ mod tests {
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
 
         assert_eq!(deserialized.len(), 1);
-<<<<<<< HEAD
-=======
-        assert_eq!(deserialized[0].entry_batch().len(), 0);
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
         assert!(deserialized[0].as_marker().is_some());
 
         let special = deserialized[0].as_marker().unwrap();
@@ -2703,10 +2653,6 @@ mod tests {
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
 
         assert_eq!(deserialized.len(), 1);
-<<<<<<< HEAD
-=======
-        assert_eq!(deserialized[0].entry_batch().len(), 0);
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
         assert!(deserialized[0].as_marker().is_some());
 
         let special = deserialized[0].as_marker().unwrap();
@@ -3339,37 +3285,6 @@ mod tests {
         let short_data = vec![1, 2, 3];
         assert_eq!(BlockComponent::infer_is_entry_batch(&short_data), None);
         assert_eq!(BlockComponent::infer_is_block_marker(&short_data), None);
-<<<<<<< HEAD
-=======
-    }
-
-    #[test]
-    fn test_as_entries_and_as_versioned_block_marker() {
-        // Test as_entries
-        let entries = vec![Entry::default(), Entry::default()];
-        let entry_component = BlockComponent::new_entry_batch(entries.clone()).unwrap();
-
-        assert!(entry_component.as_entry_batch().is_some());
-        assert_eq!(entry_component.as_entry_batch().unwrap(), &entries);
-        assert!(entry_component.as_versioned_block_marker().is_none());
-
-        // Test as_versioned_block_marker
-        let footer = BlockFooterV1 {
-            block_producer_time_nanos: 456,
-            block_user_agent: b"marker-test".to_vec(),
-        };
-        let marker = VersionedBlockMarker::new(BlockMarkerV1::BlockFooter(
-            VersionedBlockFooter::new(footer),
-        ));
-        let marker_component = BlockComponent::new_block_marker(marker.clone());
-
-        assert!(marker_component.as_versioned_block_marker().is_some());
-        assert_eq!(
-            marker_component.as_versioned_block_marker().unwrap(),
-            &marker
-        );
-        assert!(marker_component.as_entry_batch().is_none());
->>>>>>> cd34d5499e (block component: parse Vec<BlockComponent>)
     }
 
     #[test]
