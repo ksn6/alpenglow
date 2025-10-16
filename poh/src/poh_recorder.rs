@@ -697,7 +697,7 @@ impl PohRecorder {
             for (entry, tick_height) in &self.tick_cache[..entry_count] {
                 working_bank.bank.register_tick(&entry.hash);
 
-                let tick = (entry.clone().into(), *tick_height);
+                let tick = (EntryMarker::from(entry.clone()), *tick_height);
 
                 send_result = self
                     .working_bank_sender
