@@ -76,25 +76,46 @@ impl Shredder {
         reed_solomon_cache: &ReedSolomonCache,
         stats: &mut ProcessShredsStats,
     ) -> impl Iterator<Item = Shred> {
-        let now = Instant::now();
-        let data: Vec<u8> = components
-            .iter()
-            .flat_map(|component| component.to_bytes().unwrap())
-            .collect();
-        stats.serialize_elapsed += now.elapsed().as_micros() as u64;
+        let mut all_shreds = Vec::new();
+        let mut current_shred_index = next_shred_index;
+        let mut current_code_index = next_code_index;
 
-        Self::make_shreds_from_data_slice(
-            self,
-            keypair,
-            &data,
-            is_last_in_slot,
-            chained_merkle_root,
-            next_shred_index,
-            next_code_index,
-            reed_solomon_cache,
-            stats,
-        )
-        .unwrap()
+        for (ix, component) in components.iter().enumerate() {
+            let now = Instant::now();
+            let data = component.to_bytes().unwrap();
+            stats.serialize_elapsed += now.elapsed().as_micros() as u64;
+
+            let is_last_component = ix == components.len() - 1;
+            let mut data_shred_count = 0;
+            let mut code_shred_count = 0;
+
+            let shred_iter = Self::make_shreds_from_data_slice(
+                self,
+                keypair,
+                &data,
+                is_last_component && is_last_in_slot,
+                chained_merkle_root,
+                current_shred_index,
+                current_code_index,
+                reed_solomon_cache,
+                stats,
+            )
+            .unwrap();
+
+            shred_iter.for_each(|shred| {
+                if shred.is_data() {
+                    data_shred_count += 1;
+                } else {
+                    code_shred_count += 1;
+                }
+                all_shreds.push(shred);
+            });
+
+            current_shred_index += data_shred_count;
+            current_code_index += code_shred_count;
+        }
+
+        all_shreds.into_iter()
     }
 
     #[allow(clippy::too_many_arguments)]
