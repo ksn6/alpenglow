@@ -7,7 +7,6 @@ use {
         banking_trace::Channels,
         validator::{BlockProductionMethod, TransactionStructure},
     },
-    solana_poh::poh_recorder::EntryMarker,
     solana_vote::vote_transaction::new_tower_sync_transaction,
     solana_vote_program::vote_state::TowerSync,
 };
@@ -20,7 +19,10 @@ use {
     rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_core::{banking_stage::BankingStage, banking_trace::BankingTracer},
-    solana_entry::entry::{next_hash, Entry},
+    solana_entry::{
+        entry::{next_hash, Entry},
+        entry_marker::EntryMarker,
+    },
     solana_genesis_config::GenesisConfig,
     solana_hash::Hash,
     solana_keypair::Keypair,

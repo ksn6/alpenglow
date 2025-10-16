@@ -10,14 +10,14 @@ use {
     solana_account::{Account, ReadableAccount},
     solana_clock::Epoch,
     solana_core::banking_stage::consumer::Consumer,
+    solana_entry::entry_marker::EntryMarker,
     solana_keypair::Keypair,
     solana_ledger::{
         blockstore::Blockstore,
         genesis_utils::{create_genesis_config, GenesisConfigInfo},
     },
     solana_poh::{
-        poh_recorder::{create_test_recorder, EntryMarker},
-        poh_service::PohService,
+        poh_recorder::create_test_recorder, poh_service::PohService,
         transaction_recorder::TransactionRecorder,
     },
     solana_runtime::{bank::Bank, bank_forks::BankForks},
