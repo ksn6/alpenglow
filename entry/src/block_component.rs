@@ -355,6 +355,8 @@ impl BlockComponent {
     ///
     /// TODO(karthik): lower this to a reasonable value.
     const MAX_ENTRIES: usize = u32::MAX as usize;
+
+    /// Size in bytes of the entry count field when serializing entry batches.
     const ENTRY_COUNT_SIZE: usize = 8;
 
     /// Creates a new block component with an entry batch.
@@ -379,30 +381,11 @@ impl BlockComponent {
         matches!(self, Self::EntryBatch(_))
     }
 
-    /// Returns a slice of entries in this component.
-    pub fn entries(&self) -> &[Entry] {
-        match self {
-            Self::EntryBatch(entries) => entries,
-            Self::BlockMarker(_) => &[],
-        }
-    }
-
-    /// Returns a reference to the entry batch vector.
+    /// Returns a reference to the entry batch.
     ///
     /// # Panics
     /// Panics if this component is not an entry batch.
-    pub fn entry_batch(&self) -> &Vec<Entry> {
-        match self {
-            Self::EntryBatch(entries) => entries,
-            _ => panic!("BlockComponent isn't an EntryBatch."),
-        }
-    }
-
-    /// Returns a mutable reference to the entry batch vector.
-    ///
-    /// # Panics
-    /// Panics if this component is not an entry batch.
-    pub fn entry_batch_mut(&mut self) -> &mut Vec<Entry> {
+    pub fn entry_batch(&self) -> &[Entry] {
         match self {
             Self::EntryBatch(entries) => entries,
             _ => panic!("BlockComponent isn't an EntryBatch."),
@@ -441,15 +424,11 @@ impl BlockComponent {
     /// Fuses another BlockComponent into this one if both are entry batches.
     ///
     /// Returns None if fusion occurred, Some(other) if no fusion was possible.
-    pub fn maybe_fuse(&mut self, other: Self) -> Option<Self> {
-        match self {
-            Self::EntryBatch(entries) => {
-                if let Self::EntryBatch(other_entries) = other {
-                    entries.extend(other_entries);
-                    None
-                } else {
-                    Some(other)
-                }
+    pub fn try_fuse(&mut self, other: Self) -> Option<Self> {
+        match (self, &other) {
+            (Self::EntryBatch(self_entries), Self::EntryBatch(other_entries)) => {
+                self_entries.extend_from_slice(other_entries);
+                None
             }
             _ => Some(other),
         }
@@ -605,7 +584,7 @@ impl BlockComponent {
             Self::EntryBatch(entries) => bincode::serialized_size(entries)
                 .map_err(|e| BlockComponentError::SerializationFailed(e.to_string())),
             Self::BlockMarker(marker) => {
-                Ok(Self::ENTRY_COUNT_SIZE as u64 + marker.serialized_size()?)
+                Ok(Self::ENTRY_COUNT_SIZE as u64 + marker.serialized_size())
             }
         }
     }
@@ -662,6 +641,7 @@ impl<'de> Deserialize<'de> for BlockComponent {
 // ============================================================================
 
 impl VersionedBlockMarker {
+    /// Size in bytes of the version field when serializing block markers.
     const VERSION_SIZE: usize = 2;
 
     /// Creates a new versioned marker with V1 variant.
@@ -753,11 +733,11 @@ impl VersionedBlockMarker {
     }
 
     /// Returns the serialized size in bytes without actually serializing.
-    fn serialized_size(&self) -> Result<u64, BlockComponentError> {
+    fn serialized_size(&self) -> u64 {
         let marker_size = match self {
             Self::V1(marker) | Self::Current(marker) => marker.serialized_size(),
-        }?;
-        Ok(Self::VERSION_SIZE as u64 + marker_size)
+        };
+        Self::VERSION_SIZE as u64 + marker_size
     }
 }
 
@@ -860,7 +840,9 @@ fn read_variant_with_length(data: &[u8]) -> Result<(u8, &[u8]), BlockComponentEr
 }
 
 impl BlockMarkerV1 {
+    /// Size in bytes of the variant ID field.
     const VARIANT_ID_SIZE: u64 = 1;
+    /// Size in bytes of the length field.
     const LENGTH_FIELD_SIZE: u64 = 2;
 
     /// Serializes to bytes with variant ID and byte length prefix.
@@ -896,13 +878,13 @@ impl BlockMarkerV1 {
     }
 
     /// Returns the serialized size in bytes without actually serializing.
-    fn serialized_size(&self) -> Result<u64, BlockComponentError> {
+    fn serialized_size(&self) -> u64 {
         let data_size = match self {
             Self::BlockFooter(footer) => footer.serialized_size(),
             Self::BlockHeader(header) => header.serialized_size(),
             Self::UpdateParent(update) => update.serialized_size(),
-        }?;
-        Ok(Self::VARIANT_ID_SIZE + Self::LENGTH_FIELD_SIZE + data_size)
+        };
+        Self::VARIANT_ID_SIZE + Self::LENGTH_FIELD_SIZE + data_size
     }
 }
 
@@ -949,8 +931,11 @@ impl<'de> Deserialize<'de> for BlockMarkerV1 {
 impl BlockFooterV1 {
     /// Maximum length for user agent bytes.
     const MAX_USER_AGENT_LEN: usize = 255;
+    /// Size in bytes of the timestamp field.
     const TIMESTAMP_SIZE: usize = 8;
+    /// Size in bytes of the user agent length field.
     const LENGTH_SIZE: usize = 1;
+    /// Combined size of timestamp and length fields.
     const HEADER_SIZE: usize = Self::TIMESTAMP_SIZE + Self::LENGTH_SIZE;
 
     /// Returns the version for this struct.
@@ -981,9 +966,7 @@ impl BlockFooterV1 {
         }
 
         // Read timestamp
-        let time_bytes: [u8; Self::TIMESTAMP_SIZE] = data[..Self::TIMESTAMP_SIZE]
-            .try_into()
-            .map_err(|_| BlockComponentError::InsufficientData)?;
+        let time_bytes = data[..Self::TIMESTAMP_SIZE].try_into().unwrap();
         let block_producer_time_nanos = u64::from_le_bytes(time_bytes);
 
         // Read user agent length
@@ -1011,6 +994,7 @@ impl BlockFooterV1 {
 }
 
 impl VersionedBlockFooter {
+    /// Size in bytes of the version field when serializing block footers.
     const VERSION_SIZE: u64 = 1;
 
     /// Creates a new versioned block footer with V1 variant.
@@ -1055,11 +1039,11 @@ impl VersionedBlockFooter {
     }
 
     /// Returns the serialized size in bytes without actually serializing.
-    fn serialized_size(&self) -> Result<u64, BlockComponentError> {
+    fn serialized_size(&self) -> u64 {
         let footer = match self {
             Self::V1(footer) | Self::Current(footer) => footer,
         };
-        Ok(Self::VERSION_SIZE + footer.serialized_size())
+        Self::VERSION_SIZE + footer.serialized_size()
     }
 }
 
@@ -1104,7 +1088,9 @@ impl<'de> Deserialize<'de> for VersionedBlockFooter {
 // ============================================================================
 
 impl BlockHeaderV1 {
+    /// Size in bytes of the slot field.
     const SLOT_SIZE: u64 = 8;
+    /// Size in bytes of the hash field.
     const HASH_SIZE: u64 = 32;
 
     /// Returns the version for this struct.
@@ -1131,6 +1117,7 @@ impl BlockHeaderV1 {
 }
 
 impl VersionedBlockHeader {
+    /// Size in bytes of the version field when serializing block headers.
     const VERSION_SIZE: u64 = 1;
 
     /// Creates a new versioned block header with V1 variant.
@@ -1175,11 +1162,11 @@ impl VersionedBlockHeader {
     }
 
     /// Returns the serialized size in bytes without actually serializing.
-    fn serialized_size(&self) -> Result<u64, BlockComponentError> {
+    fn serialized_size(&self) -> u64 {
         let header = match self {
             Self::V1(header) | Self::Current(header) => header,
         };
-        Ok(Self::VERSION_SIZE + header.serialized_size())
+        Self::VERSION_SIZE + header.serialized_size()
     }
 }
 
@@ -1224,7 +1211,9 @@ impl<'de> Deserialize<'de> for VersionedBlockHeader {
 // ============================================================================
 
 impl UpdateParentV1 {
+    /// Size in bytes of the slot field.
     const SLOT_SIZE: u64 = 8;
+    /// Size in bytes of the hash field.
     const HASH_SIZE: u64 = 32;
 
     /// Returns the version for this struct.
@@ -1251,6 +1240,7 @@ impl UpdateParentV1 {
 }
 
 impl VersionedUpdateParent {
+    /// Size in bytes of the version field when serializing parent updates.
     const VERSION_SIZE: u64 = 1;
 
     /// Creates a new versioned parent ready update with V1 variant.
@@ -1295,11 +1285,11 @@ impl VersionedUpdateParent {
     }
 
     /// Returns the serialized size in bytes without actually serializing.
-    fn serialized_size(&self) -> Result<u64, BlockComponentError> {
+    fn serialized_size(&self) -> u64 {
         let update = match self {
             Self::V1(update) | Self::Current(update) => update,
         };
-        Ok(Self::VERSION_SIZE + update.serialized_size())
+        Self::VERSION_SIZE + update.serialized_size()
     }
 }
 
@@ -1376,7 +1366,7 @@ mod tests {
 
         assert!(component.is_entry_batch());
         assert!(!component.is_marker());
-        assert_eq!(component.entries(), entries);
+        assert_eq!(component.entry_batch(), entries.as_slice());
         assert!(component.as_marker().is_none());
     }
 
@@ -1400,7 +1390,6 @@ mod tests {
 
         assert!(!component.is_entry_batch());
         assert!(component.is_marker());
-        assert_eq!(component.entries().len(), 0);
         assert_eq!(component.as_marker(), Some(&marker));
     }
 
@@ -2285,7 +2274,7 @@ mod tests {
     fn test_block_component_new_valid() {
         let entries = create_mock_entry_batch(3);
         let batch = BlockComponent::new_entry_batch(entries).unwrap();
-        assert_eq!(batch.entries().len(), 3);
+        assert_eq!(batch.entry_batch().len(), 3);
         assert!(batch.as_marker().is_none());
     }
 
@@ -2400,7 +2389,6 @@ mod tests {
             VersionedBlockFooter::new(footer),
         ));
         let batch = BlockComponent::new_block_marker(marker);
-        assert_eq!(batch.entries().len(), 0);
         assert!(batch.as_marker().is_some());
     }
 
@@ -2429,7 +2417,7 @@ mod tests {
         // Test serde serialization
         let serialized = bincode::serialize(&batch).unwrap();
         let serde_deserialized: BlockComponent = bincode::deserialize(&serialized).unwrap();
-        assert_eq!(serde_deserialized.entries().len(), 3);
+        assert_eq!(serde_deserialized.entry_batch().len(), 3);
         assert!(serde_deserialized.as_marker().is_none());
     }
 
@@ -2457,13 +2445,11 @@ mod tests {
         // Test deserialization
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
         assert_eq!(deserialized.len(), 1);
-        assert_eq!(deserialized[0].entries().len(), 0);
         assert!(deserialized[0].as_marker().is_some());
 
         // Test serde serialization
         let serialized = bincode::serialize(&batch).unwrap();
         let serde_deserialized: BlockComponent = bincode::deserialize(&serialized).unwrap();
-        assert_eq!(serde_deserialized.entries().len(), 0);
         assert!(serde_deserialized.as_marker().is_some());
     }
 
@@ -2495,7 +2481,6 @@ mod tests {
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
 
         assert_eq!(deserialized.len(), 1);
-        assert_eq!(deserialized[0].entries().len(), 0);
         assert!(deserialized[0].as_marker().is_some());
 
         let special = deserialized[0].as_marker().unwrap();
@@ -2666,7 +2651,6 @@ mod tests {
         let deserialized = BlockComponent::from_bytes_multiple(&bytes).unwrap();
 
         assert_eq!(deserialized.len(), 1);
-        assert_eq!(deserialized[0].entries().len(), 0);
         assert!(deserialized[0].as_marker().is_some());
 
         let special = deserialized[0].as_marker().unwrap();
@@ -2685,7 +2669,6 @@ mod tests {
 
         let serde_bytes = bincode::serialize(&batch).unwrap();
         let serde_deserialized: BlockComponent = bincode::deserialize(&serde_bytes).unwrap();
-        assert_eq!(serde_deserialized.entries().len(), 0);
         assert!(serde_deserialized.as_marker().is_some());
     }
 
@@ -3422,29 +3405,29 @@ mod tests {
     }
 
     #[test]
-    fn test_maybe_fuse_entry_batches() {
+    fn test_try_fuse_entry_batches() {
         // Fusing two entry batches should succeed and combine entries
         let mut batch1 = BlockComponent::new_entry_batch(create_mock_entry_batch(3)).unwrap();
         let batch2 = BlockComponent::new_entry_batch(create_mock_entry_batch(2)).unwrap();
-        assert!(batch1.maybe_fuse(batch2).is_none());
-        assert_eq!(batch1.entries().len(), 5);
+        assert!(batch1.try_fuse(batch2).is_none());
+        assert_eq!(batch1.entry_batch().len(), 5);
 
         // Multiple fusions should work
         for _ in 0..3 {
             let batch = BlockComponent::new_entry_batch(create_mock_entry_batch(1)).unwrap();
-            assert!(batch1.maybe_fuse(batch).is_none());
+            assert!(batch1.try_fuse(batch).is_none());
         }
-        assert_eq!(batch1.entries().len(), 8);
+        assert_eq!(batch1.entry_batch().len(), 8);
 
         // Large batches should fuse correctly
         let mut large1 = BlockComponent::new_entry_batch(create_mock_entry_batch(100)).unwrap();
         let large2 = BlockComponent::new_entry_batch(create_mock_entry_batch(150)).unwrap();
-        assert!(large1.maybe_fuse(large2).is_none());
-        assert_eq!(large1.entries().len(), 250);
+        assert!(large1.try_fuse(large2).is_none());
+        assert_eq!(large1.entry_batch().len(), 250);
     }
 
     #[test]
-    fn test_maybe_fuse_with_markers() {
+    fn test_try_fuse_with_markers() {
         // Entry batch + marker should not fuse, returning the marker
         let mut batch = BlockComponent::new_entry_batch(create_mock_entry_batch(3)).unwrap();
         let footer = BlockFooterV1 {
@@ -3455,16 +3438,16 @@ mod tests {
             VersionedBlockFooter::new(footer),
         ));
         let marker_component = BlockComponent::new_block_marker(marker.clone());
-        let result = batch.maybe_fuse(marker_component);
+        let result = batch.try_fuse(marker_component);
         assert!(result.is_some() && result.as_ref().unwrap().is_marker());
-        assert_eq!(batch.entries().len(), 3); // unchanged
+        assert_eq!(batch.entry_batch().len(), 3); // unchanged
 
         // Marker + entry batch should not fuse, returning the batch
         let mut marker_comp = BlockComponent::new_block_marker(marker.clone());
         let batch_comp = BlockComponent::new_entry_batch(create_mock_entry_batch(2)).unwrap();
-        let result = marker_comp.maybe_fuse(batch_comp);
+        let result = marker_comp.try_fuse(batch_comp);
         assert!(result.is_some() && result.as_ref().unwrap().is_entry_batch());
-        assert_eq!(result.unwrap().entries().len(), 2);
+        assert_eq!(result.unwrap().entry_batch().len(), 2);
         assert!(marker_comp.is_marker()); // unchanged
 
         // Marker + marker should not fuse, returning the second marker
@@ -3477,7 +3460,7 @@ mod tests {
             VersionedBlockHeader::new(header),
         ));
         let marker2_comp = BlockComponent::new_block_marker(marker2.clone());
-        let result = marker1.maybe_fuse(marker2_comp);
+        let result = marker1.try_fuse(marker2_comp);
         assert!(result.is_some() && result.as_ref().unwrap().is_marker());
         assert_eq!(result.unwrap().as_marker(), Some(&marker2));
     }
