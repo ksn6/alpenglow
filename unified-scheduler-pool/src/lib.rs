@@ -2724,6 +2724,7 @@ mod tests {
         crate::sleepless_testing,
         assert_matches::assert_matches,
         solana_clock::{Slot, MAX_PROCESSING_AGE},
+        solana_entry::entry_marker::EntryMarker,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::{
@@ -2732,7 +2733,6 @@ mod tests {
             create_new_tmp_ledger_auto_delete,
             leader_schedule_cache::LeaderScheduleCache,
         },
-        solana_entry::entry_marker::EntryMarker,
         solana_poh::poh_recorder::create_test_recorder_with_index_tracking,
         solana_pubkey::Pubkey,
         solana_runtime::{

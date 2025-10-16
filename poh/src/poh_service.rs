@@ -479,14 +479,11 @@ impl PohService {
 mod tests {
     use {
         super::*,
-        crate::{
-            poh_controller::PohController,
-            poh_recorder::PohRecorderError::MaxHeightReached,
-        },
+        crate::{poh_controller::PohController, poh_recorder::PohRecorderError::MaxHeightReached},
         crossbeam_channel::unbounded,
-        solana_entry::entry_marker::EntryMarker,
         rand::{thread_rng, Rng},
         solana_clock::{DEFAULT_HASHES_PER_TICK, DEFAULT_MS_PER_SLOT},
+        solana_entry::entry_marker::EntryMarker,
         solana_ledger::{
             blockstore::Blockstore,
             genesis_utils::{create_genesis_config, GenesisConfigInfo},

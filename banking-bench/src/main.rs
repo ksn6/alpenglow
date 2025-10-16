@@ -13,6 +13,7 @@ use {
         banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
         validator::{BlockProductionMethod, TransactionStructure},
     },
+    solana_entry::entry_marker::EntryMarker,
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::{
@@ -21,7 +22,6 @@ use {
         get_tmp_ledger_path_auto_delete,
         leader_schedule_cache::LeaderScheduleCache,
     },
-    solana_entry::entry_marker::EntryMarker,
     solana_measure::measure::Measure,
     solana_message::Message,
     solana_perf::packet::{to_packet_batches, PacketBatch},

@@ -18,14 +18,13 @@ use {
         replay_stage::{ReplayStage, TowerBFTStructures},
         unfrozen_gossip_verified_vote_hashes::UnfrozenGossipVerifiedVoteHashes,
     },
-    solana_entry::entry::Entry,
+    solana_entry::{entry::Entry, entry_marker::EntryMarker},
     solana_hash::Hash,
     solana_ledger::{
         blockstore::Blockstore, create_new_tmp_ledger_auto_delete,
         genesis_utils::create_genesis_config, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_perf::packet::to_packet_batches,
-    solana_entry::entry_marker::EntryMarker,
     solana_poh::poh_recorder::create_test_recorder,
     solana_pubkey::Pubkey,
     solana_runtime::{

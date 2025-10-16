@@ -594,7 +594,7 @@ pub mod test {
         super::*,
         crossbeam_channel::unbounded,
         rand::Rng,
-        solana_entry::entry::create_ticks,
+        solana_entry::{entry::create_ticks, entry_marker::EntryMarker},
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
         solana_hash::Hash,
         solana_keypair::Keypair,
@@ -604,7 +604,6 @@ pub mod test {
             get_tmp_ledger_path_auto_delete,
             shred::{max_ticks_per_n_shreds, ProcessShredsStats, ReedSolomonCache, Shredder},
         },
-        solana_entry::entry_marker::EntryMarker,
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         std::{
