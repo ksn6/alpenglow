@@ -4120,12 +4120,6 @@ impl Blockstore {
                         // EntryBatches.
                         BlockComponent::from_bytes_multiple(&payload)
                             .map(|cs| {
-                                for c in &cs {
-                                    if c.is_marker() {
-                                        println!("MARKER FOUND :: {c:?}");
-                                    }
-                                }
-
                                 cs.into_iter()
                                     .filter_map(|bc| bc.as_entry_batch_owned())
                                     .flatten()
