@@ -673,7 +673,10 @@ mod tests {
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
-        solana_entry::entry::{self, EntrySlice},
+        solana_entry::{
+            entry::{self, EntrySlice},
+            entry_marker::EntryMarker,
+        },
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::{
@@ -686,7 +689,7 @@ mod tests {
         },
         solana_perf::packet::to_packet_batches,
         solana_poh::{
-            poh_recorder::{create_test_recorder, EntryMarker, PohRecorderError, Record},
+            poh_recorder::{create_test_recorder, PohRecorderError, Record},
             poh_service::PohService,
             transaction_recorder::RecordTransactionsSummary,
         },

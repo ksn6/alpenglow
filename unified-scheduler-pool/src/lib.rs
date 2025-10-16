@@ -2732,7 +2732,8 @@ mod tests {
             create_new_tmp_ledger_auto_delete,
             leader_schedule_cache::LeaderScheduleCache,
         },
-        solana_poh::poh_recorder::{create_test_recorder_with_index_tracking, EntryMarker},
+        solana_entry::entry_marker::EntryMarker,
+        solana_poh::poh_recorder::create_test_recorder_with_index_tracking,
         solana_pubkey::Pubkey,
         solana_runtime::{
             bank::Bank,

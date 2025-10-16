@@ -9,8 +9,12 @@ use {
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_clock::Slot,
-    solana_entry::block_component::{
-        BlockComponent, BlockFooterV1, BlockMarkerV1, VersionedBlockFooter, VersionedBlockMarker,
+    solana_entry::{
+        block_component::{
+            BlockComponent, BlockFooterV1, BlockMarkerV1, VersionedBlockFooter,
+            VersionedBlockMarker,
+        },
+        entry_marker::EntryMarker,
     },
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
@@ -19,9 +23,7 @@ use {
     },
     solana_measure::measure::Measure,
     solana_metrics::datapoint_info,
-    solana_poh::poh_recorder::{
-        EntryMarker, PohRecorder, Record, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS,
-    },
+    solana_poh::poh_recorder::{PohRecorder, Record, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
     solana_pubkey::Pubkey,
     solana_rpc::{rpc_subscriptions::RpcSubscriptions, slot_status_notifier::SlotStatusNotifier},
     solana_runtime::{

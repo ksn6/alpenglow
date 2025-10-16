@@ -21,10 +21,11 @@ use {
         get_tmp_ledger_path_auto_delete,
         leader_schedule_cache::LeaderScheduleCache,
     },
+    solana_entry::entry_marker::EntryMarker,
     solana_measure::measure::Measure,
     solana_message::Message,
     solana_perf::packet::{to_packet_batches, PacketBatch},
-    solana_poh::poh_recorder::{create_test_recorder, EntryMarker, PohRecorder, WorkingBankEntry},
+    solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
     solana_pubkey::{self as pubkey, Pubkey},
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,

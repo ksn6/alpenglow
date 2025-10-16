@@ -604,7 +604,7 @@ pub mod test {
             get_tmp_ledger_path_auto_delete,
             shred::{max_ticks_per_n_shreds, ProcessShredsStats, ReedSolomonCache, Shredder},
         },
-        solana_poh::poh_recorder::EntryMarker,
+        solana_entry::entry_marker::EntryMarker,
         solana_runtime::bank::Bank,
         solana_signer::Signer,
         std::{

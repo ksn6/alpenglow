@@ -25,7 +25,8 @@ use {
         genesis_utils::create_genesis_config, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_perf::packet::to_packet_batches,
-    solana_poh::poh_recorder::{create_test_recorder, EntryMarker},
+    solana_entry::entry_marker::EntryMarker,
+    solana_poh::poh_recorder::create_test_recorder,
     solana_pubkey::Pubkey,
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, genesis_utils::GenesisConfigInfo,

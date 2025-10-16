@@ -481,9 +481,10 @@ mod tests {
         super::*,
         crate::{
             poh_controller::PohController,
-            poh_recorder::{EntryMarker, PohRecorderError::MaxHeightReached},
+            poh_recorder::PohRecorderError::MaxHeightReached,
         },
         crossbeam_channel::unbounded,
+        solana_entry::entry_marker::EntryMarker,
         rand::{thread_rng, Rng},
         solana_clock::{DEFAULT_HASHES_PER_TICK, DEFAULT_MS_PER_SLOT},
         solana_ledger::{

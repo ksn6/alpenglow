@@ -260,7 +260,7 @@ mod tests {
         crossbeam_channel::unbounded,
         solana_genesis_config::GenesisConfig,
         solana_ledger::genesis_utils::{create_genesis_config, GenesisConfigInfo},
-        solana_poh::poh_recorder::EntryMarker,
+        solana_entry::entry_marker::EntryMarker,
         solana_pubkey::Pubkey,
         solana_system_transaction as system_transaction,
         solana_transaction::Transaction,

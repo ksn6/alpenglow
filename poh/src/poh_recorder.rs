@@ -23,10 +23,10 @@ use {
     solana_clock::{Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::{
         block_component::{
-            BlockComponent, BlockHeaderV1, BlockMarkerV1, VersionedBlockHeader,
-            VersionedBlockMarker,
+            BlockHeaderV1, BlockMarkerV1, VersionedBlockHeader, VersionedBlockMarker,
         },
         entry::Entry,
+        entry_marker::EntryMarker,
         poh::{Poh, PohEntry},
     },
     solana_hash::Hash,
@@ -63,85 +63,6 @@ pub enum PohRecorderError {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;
-
-#[derive(Clone, Debug)]
-pub enum EntryMarker {
-    Entry(Entry),
-    Marker(VersionedBlockMarker),
-}
-
-impl EntryMarker {
-    pub fn new_entry(entry: Entry) -> Self {
-        EntryMarker::Entry(entry)
-    }
-
-    pub fn new_marker(marker: VersionedBlockMarker) -> Self {
-        EntryMarker::Marker(marker)
-    }
-
-    pub fn into_entry(self) -> Option<Entry> {
-        match self {
-            EntryMarker::Entry(entry) => Some(entry),
-            _ => None,
-        }
-    }
-
-    pub fn as_entry(&self) -> Option<&Entry> {
-        match self {
-            EntryMarker::Entry(entry) => Some(entry),
-            _ => None,
-        }
-    }
-
-    pub fn into_marker(self) -> Option<VersionedBlockMarker> {
-        match self {
-            EntryMarker::Marker(marker) => Some(marker),
-            _ => None,
-        }
-    }
-
-    pub fn as_marker(&self) -> Option<&VersionedBlockMarker> {
-        match self {
-            EntryMarker::Marker(marker) => Some(marker),
-            _ => None,
-        }
-    }
-}
-
-impl From<Entry> for EntryMarker {
-    fn from(entry: Entry) -> Self {
-        EntryMarker::Entry(entry)
-    }
-}
-
-impl From<VersionedBlockMarker> for EntryMarker {
-    fn from(marker: VersionedBlockMarker) -> Self {
-        EntryMarker::Marker(marker)
-    }
-}
-
-impl From<BlockComponent> for EntryMarker {
-    fn from(component: BlockComponent) -> Self {
-        match component {
-            BlockComponent::EntryBatch(entries) => {
-                if entries.len() != 1 {
-                    panic!("BlockComponent::EntryBatch must contain exactly one entry");
-                }
-                EntryMarker::Entry(entries[0].clone())
-            }
-            BlockComponent::BlockMarker(marker) => EntryMarker::Marker(marker),
-        }
-    }
-}
-
-impl From<EntryMarker> for BlockComponent {
-    fn from(entry_marker: EntryMarker) -> Self {
-        match entry_marker {
-            EntryMarker::Entry(entry) => BlockComponent::EntryBatch(vec![entry]),
-            EntryMarker::Marker(marker) => BlockComponent::BlockMarker(marker),
-        }
-    }
-}
 
 pub type WorkingBankEntry = (Arc<Bank>, (EntryMarker, u64));
 
