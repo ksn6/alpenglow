@@ -966,6 +966,8 @@ impl BlockFooterV1 {
         }
 
         // Read timestamp
+        // Unwrap: HEADER_SIZE = TIMESTAMP_SIZE + USER_AGENT_LEN_SIZE > TIMESTAMP_SIZE, so this will
+        // never fail.
         let time_bytes = data[..Self::TIMESTAMP_SIZE].try_into().unwrap();
         let block_producer_time_nanos = u64::from_le_bytes(time_bytes);
 
