@@ -1508,10 +1508,10 @@ pub fn confirm_slot(
 ) -> result::Result<(), BlockstoreProcessorError> {
     let slot = bank.slot();
 
-    let slot_entries_load_result = {
+    let (slot_components, num_shreds, slot_full) = {
         let mut load_elapsed = Measure::start("load_elapsed");
         let load_result = blockstore
-            .get_slot_entries_with_shred_info(slot, progress.num_shreds, allow_dead_slots)
+            .get_slot_components_with_shred_info(slot, progress.num_shreds, allow_dead_slots)
             .map_err(BlockstoreProcessorError::FailedToLoadEntries);
         load_elapsed.stop();
         if load_result.is_err() {
@@ -1522,10 +1522,16 @@ pub fn confirm_slot(
         load_result
     }?;
 
+    let slot_entries = slot_components
+        .into_iter()
+        .filter_map(|c| c.as_entry_batch_owned())
+        .flatten()
+        .collect_vec();
+
     confirm_slot_entries(
         bank,
         replay_tx_thread_pool,
-        slot_entries_load_result,
+        (slot_entries, num_shreds, slot_full),
         timing,
         progress,
         skip_verification,
