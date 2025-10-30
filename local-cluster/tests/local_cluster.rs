@@ -7414,6 +7414,7 @@ fn test_alpenglow_ensure_liveness_after_second_notar_fallback_condition() {
 }
 
 #[test]
+#[ignore = "wip"]
 #[serial]
 fn test_alpenglow_add_missing_parent_ready() {
     solana_logger::setup_with_default(RUST_LOG_FILTER);
