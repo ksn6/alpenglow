@@ -93,8 +93,8 @@ impl BlockComponentVerifier {
         println!("SLOT {} HAS FOOTER :: {}", bank.slot(), self.has_footer);
         println!("SLOT {} HAS HEADER :: {}", bank.slot(), self.has_header);
 
-        let result = self.check_alpenglow_clock_bounds(bank.clone(), parent_bank);
-        println!("SLOT {} CLOCK :: {:?}", bank.slot(), result);
+        self.check_alpenglow_clock_bounds(bank.clone(), parent_bank)?;
+        println!("SLOT {} CLOCK VERIFICATION PASSED", bank.slot());
 
         Ok(())
     }
@@ -132,8 +132,10 @@ impl BlockComponentVerifier {
         };
 
         // Update the bank's clock timestamp with the value from the block footer
+        // Convert from nanoseconds to seconds since Clock.unix_timestamp is in seconds
         let parent_epoch = Some(parent_bank.epoch());
-        bank.set_clock(parent_epoch, footer.block_producer_time_nanos as i64);
+        let timestamp_seconds = (footer.block_producer_time_nanos / 1_000_000_000) as i64;
+        bank.set_clock(parent_epoch, timestamp_seconds);
 
         println!(
             "SLOT {} set timestamp {} {}",
