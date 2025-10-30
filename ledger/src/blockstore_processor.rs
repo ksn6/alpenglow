@@ -1527,10 +1527,22 @@ pub fn confirm_slot(
         load_result
     }?;
 
+    // Process block component markers for Alpenglow slots
     if let Some(parent_bank) = bank.parent() {
-        let mut verifier = bank.block_component_verifier.write().unwrap();
-        for marker in slot_components.iter().filter_map(|bc| bc.as_marker()) {
-            verifier.on_marker(bank.clone_without_scheduler(), parent_bank.clone(), marker)?;
+        if let Some(first_alpenglow_slot) = bank
+            .feature_set
+            .activated_slot(&agave_feature_set::alpenglow::id())
+        {
+            if bank.parent_slot() >= first_alpenglow_slot {
+                let mut verifier = bank.block_component_verifier.write().unwrap();
+                for marker in slot_components.iter().filter_map(|bc| bc.as_marker()) {
+                    verifier.on_marker(
+                        bank.clone_without_scheduler(),
+                        parent_bank.clone(),
+                        marker,
+                    )?;
+                }
+            }
         }
     }
 
@@ -2264,11 +2276,19 @@ pub fn process_single_slot(
     bank.set_block_id(block_id);
 
     // Verify block components (header, footer, clock bounds) before freezing
+    // Only for Alpenglow slots (both parent and current must be post-activation)
     if let Some(parent_bank) = bank.parent() {
-        bank.block_component_verifier
-            .read()
-            .unwrap()
-            .finish(bank.clone_without_scheduler(), parent_bank)?;
+        if let Some(first_alpenglow_slot) = bank
+            .feature_set
+            .activated_slot(&agave_feature_set::alpenglow::id())
+        {
+            if bank.parent_slot() >= first_alpenglow_slot {
+                bank.block_component_verifier
+                    .read()
+                    .unwrap()
+                    .finish(bank.clone_without_scheduler(), parent_bank)?;
+            }
+        }
     }
 
     bank.freeze(); // all banks handled by this routine are created from complete slots

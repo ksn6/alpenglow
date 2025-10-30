@@ -3471,7 +3471,7 @@ impl ReplayStage {
 
                 // Verify block components (header, footer, clock bounds) before freezing
                 // Only verify blocks that were replayed from blockstore (not leader blocks)
-                if !is_leader_block {
+                if !is_leader_block && migration_status.is_alpenglow_enabled() {
                     if let Some(parent_bank) = bank.parent() {
                         if let Err(err) = bank
                             .block_component_verifier
