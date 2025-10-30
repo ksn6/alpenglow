@@ -2032,7 +2032,34 @@ impl Bank {
             .unwrap_or_default()
     }
 
-    fn update_clock(&self, parent_epoch: Option<Epoch>) {
+    pub fn set_clock(&self, parent_epoch: Option<Epoch>, updated_unix_timestamp: i64) {
+        let mut clock = self.clock();
+        clock.unix_timestamp = updated_unix_timestamp;
+
+        // Update epoch_start_timestamp if crossing epoch boundary
+        let epoch_start_timestamp = if parent_epoch.is_some() && parent_epoch.unwrap() != self.epoch() {
+            updated_unix_timestamp
+        } else {
+            clock.epoch_start_timestamp
+        };
+
+        let clock = sysvar::clock::Clock {
+            slot: self.slot,
+            epoch_start_timestamp,
+            epoch: self.epoch_schedule().get_epoch(self.slot),
+            leader_schedule_epoch: self.epoch_schedule().get_leader_schedule_epoch(self.slot),
+            unix_timestamp: updated_unix_timestamp,
+        };
+
+        self.update_sysvar_account(&sysvar::clock::id(), |account| {
+            create_account(
+                &clock,
+                self.inherit_specially_retained_account_fields(account),
+            )
+        });
+    }
+
+    pub fn update_clock(&self, parent_epoch: Option<Epoch>) {
         let mut unix_timestamp = self.clock().unix_timestamp;
         // set epoch_start_timestamp to None to warp timestamp
         let epoch_start_timestamp = {
