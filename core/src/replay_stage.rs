@@ -3480,8 +3480,7 @@ impl ReplayStage {
                             .finish(bank.clone_without_scheduler(), parent_bank)
                         {
                             warn!(
-                                "Block component verification failed for slot {}: {:?}",
-                                bank_slot, err
+                                "Block component verification failed for slot {bank_slot}: {err:?}",
                             );
                             let root = bank_forks.read().unwrap().root();
                             Self::mark_dead_slot(

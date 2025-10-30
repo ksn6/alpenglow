@@ -1968,14 +1968,6 @@ impl Bank {
         self.epoch_schedule().first_normal_epoch
     }
 
-    pub fn block_component_verifier(&self) -> RwLockReadGuard<BlockComponentVerifier> {
-        self.block_component_verifier.read().unwrap()
-    }
-
-    pub fn block_component_verifier_mut(&self) -> RwLockWriteGuard<BlockComponentVerifier> {
-        self.block_component_verifier.write().unwrap()
-    }
-
     pub fn freeze_lock(&self) -> RwLockReadGuard<Hash> {
         self.hash.read().unwrap()
     }

@@ -27,6 +27,7 @@ pub enum BlockComponentVerifierError {
     MultipleBlockHeaders,
 }
 
+#[derive(Default)]
 pub struct BlockComponentVerifier {
     has_header: bool,
     has_footer: bool,
@@ -34,10 +35,7 @@ pub struct BlockComponentVerifier {
 
 impl BlockComponentVerifier {
     pub fn new() -> Self {
-        Self {
-            has_header: false,
-            has_footer: false,
-        }
+        Self::default()
     }
 
     pub fn latest_acceptable_time(time: u64, diff_slots: u64) -> u64 {
@@ -163,12 +161,14 @@ impl BlockComponentVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{bank::Bank, genesis_utils::create_genesis_config};
-    use solana_entry::block_component::{BlockFooterV1, BlockHeaderV1};
-    use solana_program::{hash::Hash, pubkey::Pubkey};
-    use std::sync::Arc;
-    use test_case::test_case;
+    use {
+        super::*,
+        crate::{bank::Bank, genesis_utils::create_genesis_config},
+        solana_entry::block_component::{BlockFooterV1, BlockHeaderV1},
+        solana_program::{hash::Hash, pubkey::Pubkey},
+        std::sync::Arc,
+        test_case::test_case,
+    };
 
     fn create_test_bank() -> Arc<Bank> {
         let genesis_config_info = create_genesis_config(10_000);
