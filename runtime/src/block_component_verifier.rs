@@ -40,6 +40,26 @@ impl BlockComponentVerifier {
         }
     }
 
+    pub fn latest_acceptable_time(time: u64, diff_slots: u64) -> u64 {
+        let max_diff_time = DELTA_BLOCK
+            .checked_mul(CLOCK_TIMEOUT_MULTIPLIER)
+            .unwrap()
+            .checked_mul(diff_slots as u32)
+            .unwrap();
+
+        time + max_diff_time.as_nanos() as u64
+    }
+
+    pub fn skewed_time(current_time: u64, parent_time: u64, diff_slots: u64) -> u64 {
+        if current_time <= parent_time {
+            current_time.saturating_add(1)
+        } else {
+            let latest_acceptable_time =
+                BlockComponentVerifier::latest_acceptable_time(current_time, diff_slots);
+            latest_acceptable_time.min(current_time)
+        }
+    }
+
     fn check_alpenglow_clock_bounds(
         &self,
         bank: Arc<Bank>,
@@ -64,13 +84,8 @@ impl BlockComponentVerifier {
         };
 
         let diff_slots = current_slot.checked_sub(parent_slot).unwrap();
-
-        let max_diff_time = DELTA_BLOCK
-            .checked_mul(CLOCK_TIMEOUT_MULTIPLIER)
-            .unwrap()
-            .checked_mul(diff_slots as u32)
-            .unwrap();
-        let latest_acceptable_current_time = parent_time + max_diff_time.as_nanos() as u64;
+        let latest_acceptable_current_time =
+            BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
 
         println!("SLOT {} CLOCK parent_time :: {}", current_slot, parent_time);
         println!(

@@ -29,6 +29,7 @@ use {
     solana_runtime::{
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
+        block_component_verifier::BlockComponentVerifier,
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo, votor::LeaderWindowNotifier},
@@ -365,23 +366,44 @@ fn record_and_complete_block(
 
     // Construct and send the block footer
     let mut w_poh_recorder = poh_recorder.write().unwrap();
-    let block_producer_time_nanos = w_poh_recorder.working_bank_block_producer_time_nanos();
-    let footer = produce_block_footer(block_producer_time_nanos);
-    w_poh_recorder.send_marker(footer)?;
 
-    // Alpentick and clear bank
+    // This is the "current" time
+    let block_producer_time_nanos = w_poh_recorder.working_bank_block_producer_time_nanos();
+
+    // Update the bank's clock timestamp with the value from the block footer
     let bank = w_poh_recorder
         .bank()
         .expect("Bank cannot have been cleared as BlockCreationLoop is the only modifier");
 
-    // Update the bank's clock timestamp with the value from the block footer
-    let parent_epoch = if let Some(parent_bank) = bank.parent() {
-        Some(parent_bank.epoch())
-    } else {
-        None
-    };
-    bank.set_clock(parent_epoch, block_producer_time_nanos);
+    let (parent_epoch, skewed_time) = if let Some(parent_bank) = bank.parent() {
+        let parent_epoch = parent_bank.epoch();
+        let parent_block_producer_time_nanos =
+            parent_bank.alpenglow_timestamp_nanos.read().unwrap();
 
+        let skewed_time =
+            if let Some(parent_block_producer_time_nanos) = *parent_block_producer_time_nanos {
+                let diff_slots = bank.slot() - parent_bank.slot();
+
+                BlockComponentVerifier::skewed_time(
+                    block_producer_time_nanos,
+                    parent_block_producer_time_nanos,
+                    diff_slots,
+                )
+            } else {
+                block_producer_time_nanos
+            };
+
+        (Some(parent_epoch), skewed_time)
+    } else {
+        (None, block_producer_time_nanos)
+    };
+
+    let footer = produce_block_footer(skewed_time);
+    w_poh_recorder.send_marker(footer)?;
+
+    bank.set_clock(parent_epoch, skewed_time);
+
+    // Alpentick and clear bank
     trace!(
         "{}: bank {} has reached block timeout, ticking",
         bank.collector_id(),
