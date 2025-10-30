@@ -76,26 +76,12 @@ impl BlockComponentVerifier {
 
         // If parent doesn't have alpenglow_timestamp (e.g., genesis bank), skip clock bounds check
         let Some(parent_time) = *parent_bank.alpenglow_timestamp_nanos.read().unwrap() else {
-            println!(
-                "SLOT {} CLOCK skipping bounds check (parent has no alpenglow timestamp)",
-                current_slot
-            );
             return Ok(());
         };
 
         let diff_slots = current_slot.checked_sub(parent_slot).unwrap();
         let latest_acceptable_current_time =
             BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
-
-        println!("SLOT {} CLOCK parent_time :: {}", current_slot, parent_time);
-        println!(
-            "SLOT {} CLOCK current_time :: {}",
-            current_slot, current_time
-        );
-        println!(
-            "SLOT {} CLOCK latest_acceptable_current_time :: {}",
-            current_slot, latest_acceptable_current_time
-        );
 
         if parent_time < current_time && current_time <= latest_acceptable_current_time {
             Ok(())
@@ -117,11 +103,7 @@ impl BlockComponentVerifier {
             return Err(BlockComponentVerifierError::MissingBlockHeader);
         }
 
-        println!("SLOT {} HAS FOOTER :: {}", bank.slot(), self.has_footer);
-        println!("SLOT {} HAS HEADER :: {}", bank.slot(), self.has_header);
-
         self.check_alpenglow_clock_bounds(bank.clone(), parent_bank)?;
-        println!("SLOT {} CLOCK VERIFICATION PASSED", bank.slot());
 
         Ok(())
     }
@@ -161,13 +143,6 @@ impl BlockComponentVerifier {
         // Update the bank's clock timestamp with the value from the block footer
         let parent_epoch = Some(parent_bank.epoch());
         bank.set_clock(parent_epoch, footer.block_producer_time_nanos);
-
-        println!(
-            "SLOT {} set timestamp {} {}",
-            bank.slot(),
-            bank.clock().unix_timestamp,
-            footer.block_producer_time_nanos
-        );
 
         self.has_footer = true;
         Ok(())

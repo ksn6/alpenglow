@@ -4156,21 +4156,11 @@ impl Blockstore {
                     .and_then(|payload| {
                         // TODO(karthik): if Alpenglow flag is disabled, return an error on special
                         // EntryBatches.
-                        BlockComponent::from_bytes_multiple(&payload)
-                            .map_err(|e| {
-                                BlockstoreError::InvalidShredData(Box::new(
-                                    bincode::ErrorKind::Custom(format!(
-                                        "could not reconstruct entries: {e:?}"
-                                    )),
-                                ))
-                            })
-                            .inspect(|bcs| {
-                                for bc in bcs {
-                                    if bc.is_marker() {
-                                        println!("MARKER FOUND :: {:?}", bc);
-                                    }
-                                }
-                            })
+                        BlockComponent::from_bytes_multiple(&payload).map_err(|e| {
+                            BlockstoreError::InvalidShredData(Box::new(bincode::ErrorKind::Custom(
+                                format!("could not reconstruct entries: {e:?}"),
+                            )))
+                        })
                     })
             })
             .flatten_ok()

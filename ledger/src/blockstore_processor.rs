@@ -1531,8 +1531,6 @@ pub fn confirm_slot(
         let mut verifier = bank.block_component_verifier.write().unwrap();
         for marker in slot_components.iter().filter_map(|bc| bc.as_marker()) {
             verifier.on_marker(bank.clone_without_scheduler(), parent_bank.clone(), marker)?;
-
-            println!("CONFIRM SLOT MARKER: {:?}", marker);
         }
     }
 
