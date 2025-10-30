@@ -49,13 +49,13 @@ impl BlockComponentVerifier {
 
         // Get Alpenglow timestamps in nanoseconds
         let current_time = bank
-            .alpenglow_timestamp
+            .alpenglow_timestamp_nanos
             .read()
             .unwrap()
             .expect("Current bank should have alpenglow_timestamp set by footer");
 
         // If parent doesn't have alpenglow_timestamp (e.g., genesis bank), skip clock bounds check
-        let Some(parent_time) = *parent_bank.alpenglow_timestamp.read().unwrap() else {
+        let Some(parent_time) = *parent_bank.alpenglow_timestamp_nanos.read().unwrap() else {
             println!(
                 "SLOT {} CLOCK skipping bounds check (parent has no alpenglow timestamp)",
                 current_slot
@@ -144,13 +144,8 @@ impl BlockComponentVerifier {
         };
 
         // Update the bank's clock timestamp with the value from the block footer
-        // Convert from nanoseconds to seconds since Clock.unix_timestamp is in seconds
         let parent_epoch = Some(parent_bank.epoch());
-        let timestamp_seconds = (footer.block_producer_time_nanos / 1_000_000_000) as i64;
-        bank.set_clock(parent_epoch, timestamp_seconds);
-
-        // Store the alpenglow timestamp in nanoseconds for verification
-        *bank.alpenglow_timestamp.write().unwrap() = Some(footer.block_producer_time_nanos);
+        bank.set_clock(parent_epoch, footer.block_producer_time_nanos);
 
         println!(
             "SLOT {} set timestamp {} {}",

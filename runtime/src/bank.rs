@@ -558,7 +558,7 @@ impl PartialEq for Bank {
             bank_hash_stats: _,
             epoch_rewards_calculation_cache: _,
             block_component_verifier: _,
-            alpenglow_timestamp: _,
+            alpenglow_timestamp_nanos: _,
             // Ignore new fields explicitly if they do not impact PartialEq.
             // Adding ".." will remove compile-time checks that if a new field
             // is added to the struct, this PartialEq is accordingly updated.
@@ -915,7 +915,7 @@ pub struct Bank {
     pub block_component_verifier: RwLock<BlockComponentVerifier>,
 
     /// Alpenglow timestamp in nanoseconds from block footer
-    pub alpenglow_timestamp: RwLock<Option<u64>>,
+    pub alpenglow_timestamp_nanos: RwLock<Option<u64>>,
 }
 
 #[derive(Debug)]
@@ -1114,7 +1114,7 @@ impl Bank {
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
             alpenglow_genesis: None,
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
-            alpenglow_timestamp: RwLock::new(None),
+            alpenglow_timestamp_nanos: RwLock::new(None),
         };
 
         bank.transaction_processor =
@@ -1378,7 +1378,7 @@ impl Bank {
             epoch_rewards_calculation_cache: parent.epoch_rewards_calculation_cache.clone(),
             alpenglow_genesis: parent.alpenglow_genesis.clone(),
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
-            alpenglow_timestamp: RwLock::new(None),
+            alpenglow_timestamp_nanos: RwLock::new(None),
         };
 
         let (_, ancestors_time_us) = measure_us!({
@@ -1850,7 +1850,7 @@ impl Bank {
             // TODO(ashwin): Plug in from snapshot
             alpenglow_genesis: None,
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
-            alpenglow_timestamp: RwLock::new(None),
+            alpenglow_timestamp_nanos: RwLock::new(None),
         };
 
         // Sanity assertions between bank snapshot and genesis config
@@ -2055,7 +2055,15 @@ impl Bank {
             .unwrap_or_default()
     }
 
-    pub fn set_clock(&self, parent_epoch: Option<Epoch>, updated_unix_timestamp: i64) {
+    pub fn set_clock(&self, parent_epoch: Option<Epoch>, alpenglow_timestamp_nanos: u64) {
+        self.alpenglow_timestamp_nanos
+            .write()
+            .unwrap()
+            .replace(alpenglow_timestamp_nanos);
+
+        let updated_unix_timestamp = alpenglow_timestamp_nanos as i64;
+        let updated_unix_timestamp = updated_unix_timestamp / 1_000_000_000;
+
         let mut clock = self.clock();
         clock.unix_timestamp = updated_unix_timestamp;
 

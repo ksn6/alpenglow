@@ -373,6 +373,15 @@ fn record_and_complete_block(
     let bank = w_poh_recorder
         .bank()
         .expect("Bank cannot have been cleared as BlockCreationLoop is the only modifier");
+
+    // Update the bank's clock timestamp with the value from the block footer
+    let parent_epoch = if let Some(parent_bank) = bank.parent() {
+        Some(parent_bank.epoch())
+    } else {
+        None
+    };
+    bank.set_clock(parent_epoch, block_producer_time_nanos);
+
     trace!(
         "{}: bank {} has reached block timeout, ticking",
         bank.collector_id(),
