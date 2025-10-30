@@ -41,6 +41,7 @@ use {
             partitioned_epoch_rewards::{EpochRewardStatus, VoteRewardsAccounts},
         },
         bank_forks::BankForks,
+        block_component_verifier::BlockComponentVerifier,
         epoch_stakes::{NodeVoteAccounts, VersionedEpochStakes},
         inflation_rewards::points::InflationPointCalculationEvent,
         installed_scheduler_pool::{BankWithScheduler, InstalledSchedulerRwLock},
@@ -556,6 +557,7 @@ impl PartialEq for Bank {
             block_id,
             bank_hash_stats: _,
             epoch_rewards_calculation_cache: _,
+            block_component_verifier: _,
             // Ignore new fields explicitly if they do not impact PartialEq.
             // Adding ".." will remove compile-time checks that if a new field
             // is added to the struct, this PartialEq is accordingly updated.
@@ -907,6 +909,9 @@ pub struct Bank {
 
     /// The alpenglow genesis block, and the certificate from the genesis vote
     alpenglow_genesis: Option<(Block, Certificate)>,
+
+    /// Block component verifier for validating block headers/footers and clock bounds
+    pub block_component_verifier: RwLock<BlockComponentVerifier>,
 }
 
 #[derive(Debug)]
@@ -1104,6 +1109,7 @@ impl Bank {
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
             alpenglow_genesis: None,
+            block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
         };
 
         bank.transaction_processor =
@@ -1366,6 +1372,7 @@ impl Bank {
             bank_hash_stats: AtomicBankHashStats::default(),
             epoch_rewards_calculation_cache: parent.epoch_rewards_calculation_cache.clone(),
             alpenglow_genesis: parent.alpenglow_genesis.clone(),
+            block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
         };
 
         let (_, ancestors_time_us) = measure_us!({
@@ -1836,6 +1843,7 @@ impl Bank {
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
             // TODO(ashwin): Plug in from snapshot
             alpenglow_genesis: None,
+            block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
         };
 
         // Sanity assertions between bank snapshot and genesis config
@@ -1953,6 +1961,14 @@ impl Bank {
         self.epoch_schedule().first_normal_epoch
     }
 
+    pub fn block_component_verifier(&self) -> RwLockReadGuard<BlockComponentVerifier> {
+        self.block_component_verifier.read().unwrap()
+    }
+
+    pub fn block_component_verifier_mut(&self) -> RwLockWriteGuard<BlockComponentVerifier> {
+        self.block_component_verifier.write().unwrap()
+    }
+
     pub fn freeze_lock(&self) -> RwLockReadGuard<Hash> {
         self.hash.read().unwrap()
     }
@@ -2037,11 +2053,12 @@ impl Bank {
         clock.unix_timestamp = updated_unix_timestamp;
 
         // Update epoch_start_timestamp if crossing epoch boundary
-        let epoch_start_timestamp = if parent_epoch.is_some() && parent_epoch.unwrap() != self.epoch() {
-            updated_unix_timestamp
-        } else {
-            clock.epoch_start_timestamp
-        };
+        let epoch_start_timestamp =
+            if parent_epoch.is_some() && parent_epoch.unwrap() != self.epoch() {
+                updated_unix_timestamp
+            } else {
+                clock.epoch_start_timestamp
+            };
 
         let clock = sysvar::clock::Clock {
             slot: self.slot,

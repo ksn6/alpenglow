@@ -28,27 +28,27 @@ pub enum BlockComponentVerifierError {
 }
 
 pub struct BlockComponentVerifier {
-    bank: Arc<Bank>,
-    parent_bank: Arc<Bank>,
     has_header: bool,
     has_footer: bool,
 }
 
 impl BlockComponentVerifier {
-    pub fn new(bank: Arc<Bank>, parent_bank: Arc<Bank>) -> Self {
+    pub fn new() -> Self {
         Self {
-            bank,
-            parent_bank,
             has_header: false,
             has_footer: false,
         }
     }
 
-    fn check_alpenglow_clock_bounds(&self) -> result::Result<(), BlockComponentVerifierError> {
-        let (current_slot, parent_slot) = (self.bank.slot(), self.bank.parent_slot());
+    fn check_alpenglow_clock_bounds(
+        &self,
+        bank: Arc<Bank>,
+        parent_bank: Arc<Bank>,
+    ) -> result::Result<(), BlockComponentVerifierError> {
+        let (current_slot, parent_slot) = (bank.slot(), bank.parent_slot());
         let (current_time, parent_time) = (
-            self.bank.clock().unix_timestamp,
-            self.parent_bank.clock().unix_timestamp,
+            bank.clock().unix_timestamp,
+            parent_bank.clock().unix_timestamp,
         );
 
         let diff_slots = current_slot.checked_sub(parent_slot).unwrap();
@@ -67,26 +67,28 @@ impl BlockComponentVerifier {
         }
     }
 
-    pub fn finish(&self) -> result::Result<(), BlockComponentVerifierError> {
-        println!("HAS FOOTER :: {}", self.has_footer);
+    pub fn finish(
+        &self,
+        bank: Arc<Bank>,
+        parent_bank: Arc<Bank>,
+    ) -> result::Result<(), BlockComponentVerifierError> {
         if !self.has_footer {
             return Err(BlockComponentVerifierError::MissingBlockFooter);
         }
 
-        println!("HAS HEADER :: {}", self.has_header);
         if !self.has_header {
             return Err(BlockComponentVerifierError::MissingBlockHeader);
         }
 
-        let result = self.check_alpenglow_clock_bounds();
-        println!("CHECKING CLOCK BOUNDS:: {:?}", &result);
-        // result?;
+        self.check_alpenglow_clock_bounds(bank, parent_bank)?;
 
         Ok(())
     }
 
     pub fn on_marker(
         &mut self,
+        bank: Arc<Bank>,
+        parent_bank: Arc<Bank>,
         marker: &VersionedBlockMarker,
     ) -> result::Result<(), BlockComponentVerifierError> {
         let marker = match marker {
@@ -94,7 +96,7 @@ impl BlockComponentVerifier {
         };
 
         match marker {
-            BlockMarkerV1::BlockFooter(footer) => self.on_footer(footer),
+            BlockMarkerV1::BlockFooter(footer) => self.on_footer(bank, parent_bank, footer),
             BlockMarkerV1::BlockHeader(header) => self.on_header(header),
             // We process UpdateParent messages on shred ingest, so no callback needed here
             BlockMarkerV1::UpdateParent(_) => Ok(()),
@@ -103,6 +105,8 @@ impl BlockComponentVerifier {
 
     fn on_footer(
         &mut self,
+        bank: Arc<Bank>,
+        parent_bank: Arc<Bank>,
         footer: &VersionedBlockFooter,
     ) -> result::Result<(), BlockComponentVerifierError> {
         if self.has_footer {
@@ -114,9 +118,8 @@ impl BlockComponentVerifier {
         };
 
         // Update the bank's clock timestamp with the value from the block footer
-        let parent_epoch = Some(self.parent_bank.epoch());
-        self.bank
-            .set_clock(parent_epoch, footer.block_producer_time_nanos as i64);
+        let parent_epoch = Some(parent_bank.epoch());
+        bank.set_clock(parent_epoch, footer.block_producer_time_nanos as i64);
 
         self.has_footer = true;
         Ok(())

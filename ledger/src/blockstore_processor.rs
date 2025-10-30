@@ -833,6 +833,11 @@ pub enum BlockstoreProcessorError {
 
     #[error("non consecutive leader slot for bank {0} parent {1}")]
     NonConsecutiveLeaderSlot(Slot, Slot),
+
+    #[error("block component verifier error: {0}")]
+    BlockComponentVerifier(
+        #[from] solana_runtime::block_component_verifier::BlockComponentVerifierError,
+    ),
 }
 
 /// Callback for accessing bank state after each slot is confirmed while
@@ -1521,6 +1526,19 @@ pub fn confirm_slot(
         }
         load_result
     }?;
+
+    if let Some(parent_bank) = bank.parent() {
+        let mut verifier = bank.block_component_verifier.write().unwrap();
+        for marker in slot_components.iter().filter_map(|bc| bc.as_marker()) {
+            verifier.on_marker(
+                bank.clone_without_scheduler(),
+                parent_bank.clone(),
+                marker,
+            )?;
+
+            println!("CONFIRM SLOT MARKER: {:?}", marker);
+        }
+    }
 
     let slot_entries = slot_components
         .into_iter()
