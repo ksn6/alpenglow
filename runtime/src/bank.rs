@@ -558,6 +558,7 @@ impl PartialEq for Bank {
             bank_hash_stats: _,
             epoch_rewards_calculation_cache: _,
             block_component_verifier: _,
+            alpenglow_timestamp: _,
             // Ignore new fields explicitly if they do not impact PartialEq.
             // Adding ".." will remove compile-time checks that if a new field
             // is added to the struct, this PartialEq is accordingly updated.
@@ -912,6 +913,9 @@ pub struct Bank {
 
     /// Block component verifier for validating block headers/footers and clock bounds
     pub block_component_verifier: RwLock<BlockComponentVerifier>,
+
+    /// Alpenglow timestamp in nanoseconds from block footer
+    pub alpenglow_timestamp: RwLock<Option<u64>>,
 }
 
 #[derive(Debug)]
@@ -1110,6 +1114,7 @@ impl Bank {
             epoch_rewards_calculation_cache: Arc::new(Mutex::new(HashMap::default())),
             alpenglow_genesis: None,
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
+            alpenglow_timestamp: RwLock::new(None),
         };
 
         bank.transaction_processor =
@@ -1373,6 +1378,7 @@ impl Bank {
             epoch_rewards_calculation_cache: parent.epoch_rewards_calculation_cache.clone(),
             alpenglow_genesis: parent.alpenglow_genesis.clone(),
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
+            alpenglow_timestamp: RwLock::new(None),
         };
 
         let (_, ancestors_time_us) = measure_us!({
@@ -1844,6 +1850,7 @@ impl Bank {
             // TODO(ashwin): Plug in from snapshot
             alpenglow_genesis: None,
             block_component_verifier: RwLock::new(BlockComponentVerifier::new()),
+            alpenglow_timestamp: RwLock::new(None),
         };
 
         // Sanity assertions between bank snapshot and genesis config
