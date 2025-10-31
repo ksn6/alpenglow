@@ -67,13 +67,11 @@ impl BlockComponentVerifier {
 
         // Get Alpenglow timestamps in nanoseconds
         let current_time = bank
-            .alpenglow_timestamp_nanos
-            .read()
-            .unwrap()
+            .get_alpenglow_clock()
             .expect("Current bank should have alpenglow_timestamp set by footer");
 
         // If parent doesn't have alpenglow_timestamp (e.g., genesis bank), skip clock bounds check
-        let Some(parent_time) = *parent_bank.alpenglow_timestamp_nanos.read().unwrap() else {
+        let Some(parent_time) = parent_bank.get_alpenglow_clock() else {
             return Ok(());
         };
 
@@ -141,6 +139,7 @@ impl BlockComponentVerifier {
         // Update the bank's clock timestamp with the value from the block footer
         let parent_epoch = Some(parent_bank.epoch());
         bank.set_clock(parent_epoch, footer.block_producer_time_nanos);
+        bank.set_alpenglow_clock(footer.block_producer_time_nanos);
 
         self.has_footer = true;
         Ok(())
@@ -229,7 +228,7 @@ mod tests {
         let bank = create_child_bank(&parent, 1);
 
         // Set footer but not header
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(1_000_000_000);
+        bank.set_alpenglow_clock(1_000_000_000);
 
         let mut v = verifier;
         v.has_footer = true;
@@ -311,10 +310,7 @@ mod tests {
         assert!(verifier.has_footer);
 
         // Verify alpenglow_timestamp_nanos is set correctly
-        assert_eq!(
-            *bank.alpenglow_timestamp_nanos.read().unwrap(),
-            Some(footer_time)
-        );
+        assert_eq!(bank.get_alpenglow_clock(), Some(footer_time));
 
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();
@@ -343,7 +339,7 @@ mod tests {
         let bank = create_child_bank(&parent, 1);
 
         // Set current bank timestamp but not parent (simulates genesis case)
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(1_000_000_000);
+        bank.set_alpenglow_clock(1_000_000_000);
 
         // Should succeed and skip bounds check
         let result = verifier.finish(bank, parent);
@@ -365,8 +361,8 @@ mod tests {
 
         let current_time = parent_time + time_offset;
 
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(current_time);
+        parent.set_alpenglow_clock(parent_time);
+        bank.set_alpenglow_clock(current_time);
 
         // Should succeed - time is progressing normally within bounds
         let result = verifier.finish(bank, parent);
@@ -385,8 +381,8 @@ mod tests {
         let parent_time = 1_000_000_000_000_000_000u64;
         let current_time = parent_time; // Same time, not progressing
 
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(current_time);
+        parent.set_alpenglow_clock(parent_time);
+        bank.set_alpenglow_clock(current_time);
 
         // Should fail - time must progress
         let result = verifier.finish(bank, parent);
@@ -411,8 +407,8 @@ mod tests {
 
         let current_time = parent_time + time_offset;
 
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(current_time);
+        parent.set_alpenglow_clock(parent_time);
+        bank.set_alpenglow_clock(current_time);
 
         // Should fail - time is too far ahead
         let result = verifier.finish(bank, parent);
@@ -438,8 +434,8 @@ mod tests {
 
         let current_time = BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
 
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(current_time);
+        parent.set_alpenglow_clock(parent_time);
+        bank.set_alpenglow_clock(current_time);
 
         // Should succeed - exactly at the boundary
         let result = verifier.finish(bank, parent);
@@ -463,8 +459,8 @@ mod tests {
         let current_time =
             BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots) + 1;
 
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
-        *bank.alpenglow_timestamp_nanos.write().unwrap() = Some(current_time);
+        parent.set_alpenglow_clock(parent_time);
+        bank.set_alpenglow_clock(current_time);
 
         // Should fail - just beyond the boundary
         let result = verifier.finish(bank, parent);
@@ -509,10 +505,7 @@ mod tests {
         assert!(verifier.has_footer);
 
         // Verify alpenglow_timestamp_nanos is set correctly
-        assert_eq!(
-            *bank.alpenglow_timestamp_nanos.read().unwrap(),
-            Some(footer_time)
-        );
+        assert_eq!(bank.get_alpenglow_clock(), Some(footer_time));
 
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();
@@ -526,7 +519,7 @@ mod tests {
         let bank = create_child_bank(&parent, 1);
 
         let parent_time = 1_000_000_000_000_000_000u64;
-        *parent.alpenglow_timestamp_nanos.write().unwrap() = Some(parent_time);
+        parent.set_alpenglow_clock(parent_time);
 
         // Process header
         let header = VersionedBlockHeader::V1(BlockHeaderV1 {
@@ -546,10 +539,7 @@ mod tests {
 
         // Verify alpenglow_timestamp_nanos is set correctly
         let expected_timestamp = parent_time + 100_000_000;
-        assert_eq!(
-            *bank.alpenglow_timestamp_nanos.read().unwrap(),
-            Some(expected_timestamp)
-        );
+        assert_eq!(bank.get_alpenglow_clock(), Some(expected_timestamp));
 
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();

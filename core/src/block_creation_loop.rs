@@ -377,11 +377,9 @@ fn record_and_complete_block(
 
     let (parent_epoch, skewed_time) = if let Some(parent_bank) = bank.parent() {
         let parent_epoch = parent_bank.epoch();
-        let parent_block_producer_time_nanos =
-            parent_bank.alpenglow_timestamp_nanos.read().unwrap();
 
         let skewed_time =
-            if let Some(parent_block_producer_time_nanos) = *parent_block_producer_time_nanos {
+            if let Some(parent_block_producer_time_nanos) = parent_bank.get_alpenglow_clock() {
                 let diff_slots = bank.slot() - parent_bank.slot();
 
                 BlockComponentVerifier::skewed_time(
