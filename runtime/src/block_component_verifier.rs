@@ -357,11 +357,11 @@ mod tests {
         verifier.has_footer = true;
 
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, slot_diff);
-
-        let current_time = parent_time + time_offset;
-
+        // Set parent clock BEFORE creating child
         parent.set_alpenglow_clock(parent_time);
+
+        let bank = create_child_bank(&parent, slot_diff);
+        let current_time = parent_time + time_offset;
         bank.set_alpenglow_clock(current_time);
 
         // Should succeed - time is progressing normally within bounds
@@ -376,12 +376,12 @@ mod tests {
         verifier.has_footer = true;
 
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, 1);
-
         let parent_time = 1_000_000_000_000_000_000u64;
-        let current_time = parent_time; // Same time, not progressing
-
+        // Set parent clock BEFORE creating child
         parent.set_alpenglow_clock(parent_time);
+
+        let bank = create_child_bank(&parent, 1);
+        let current_time = parent_time; // Same time, not progressing
         bank.set_alpenglow_clock(current_time);
 
         // Should fail - time must progress
@@ -403,11 +403,11 @@ mod tests {
         verifier.has_footer = true;
 
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, slot_diff);
-
-        let current_time = parent_time + time_offset;
-
+        // Set parent clock BEFORE creating child
         parent.set_alpenglow_clock(parent_time);
+
+        let bank = create_child_bank(&parent, slot_diff);
+        let current_time = parent_time + time_offset;
         bank.set_alpenglow_clock(current_time);
 
         // Should fail - time is too far ahead
@@ -430,11 +430,11 @@ mod tests {
         verifier.has_footer = true;
 
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, diff_slots);
-
-        let current_time = BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
-
+        // Set parent clock BEFORE creating child
         parent.set_alpenglow_clock(parent_time);
+
+        let bank = create_child_bank(&parent, diff_slots);
+        let current_time = BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
         bank.set_alpenglow_clock(current_time);
 
         // Should succeed - exactly at the boundary
@@ -454,12 +454,12 @@ mod tests {
         verifier.has_footer = true;
 
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, diff_slots);
+        // Set parent clock BEFORE creating child
+        parent.set_alpenglow_clock(parent_time);
 
+        let bank = create_child_bank(&parent, diff_slots);
         let current_time =
             BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots) + 1;
-
-        parent.set_alpenglow_clock(parent_time);
         bank.set_alpenglow_clock(current_time);
 
         // Should fail - just beyond the boundary
@@ -516,10 +516,11 @@ mod tests {
     fn test_complete_workflow_success() {
         let mut verifier = BlockComponentVerifier::new();
         let parent = create_test_bank();
-        let bank = create_child_bank(&parent, 1);
-
         let parent_time = 1_000_000_000_000_000_000u64;
+        // Set parent clock BEFORE creating child
         parent.set_alpenglow_clock(parent_time);
+
+        let bank = create_child_bank(&parent, 1);
 
         // Process header
         let header = VersionedBlockHeader::V1(BlockHeaderV1 {
