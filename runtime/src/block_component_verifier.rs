@@ -3,15 +3,9 @@ use {
     solana_entry::block_component::{
         BlockMarkerV1, VersionedBlockFooter, VersionedBlockHeader, VersionedBlockMarker,
     },
-    std::{result, sync::Arc, time::Duration},
+    std::{result, sync::Arc},
     thiserror::Error,
 };
-
-/// Time the leader has for producing and sending the block.
-pub(crate) const DELTA_BLOCK: Duration = Duration::from_millis(400);
-
-/// Clock multiplier for timeout bounds
-const CLOCK_TIMEOUT_MULTIPLIER: u32 = 2;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BlockComponentVerifierError {
@@ -19,8 +13,6 @@ pub enum BlockComponentVerifierError {
     MissingBlockFooter,
     #[error("Missing block header")]
     MissingBlockHeader,
-    #[error("Alpenglow clock bounds exceeded")]
-    AlpenglowClockBoundsExceeded,
     #[error("Multiple block footers detected")]
     MultipleBlockFooters,
     #[error("Multiple block headers detected")]
@@ -38,59 +30,7 @@ impl BlockComponentVerifier {
         Self::default()
     }
 
-    pub fn latest_acceptable_time(time: u64, diff_slots: u64) -> u64 {
-        let max_diff_time = DELTA_BLOCK
-            .checked_mul(CLOCK_TIMEOUT_MULTIPLIER)
-            .unwrap()
-            .checked_mul(diff_slots as u32)
-            .unwrap();
-
-        time + max_diff_time.as_nanos() as u64
-    }
-
-    pub fn skewed_time(current_time: u64, parent_time: u64, diff_slots: u64) -> u64 {
-        if current_time <= parent_time {
-            current_time.saturating_add(1)
-        } else {
-            let latest_acceptable_time =
-                BlockComponentVerifier::latest_acceptable_time(current_time, diff_slots);
-            latest_acceptable_time.min(current_time)
-        }
-    }
-
-    fn check_alpenglow_clock_bounds(
-        &self,
-        bank: Arc<Bank>,
-        parent_bank: Arc<Bank>,
-    ) -> result::Result<(), BlockComponentVerifierError> {
-        let (current_slot, parent_slot) = (bank.slot(), bank.parent_slot());
-
-        // Get Alpenglow timestamps in nanoseconds
-        let current_time = bank
-            .get_alpenglow_clock()
-            .expect("Current bank should have alpenglow_timestamp set by footer");
-
-        // If parent doesn't have alpenglow_timestamp (e.g., genesis bank), skip clock bounds check
-        let Some(parent_time) = parent_bank.get_alpenglow_clock() else {
-            return Ok(());
-        };
-
-        let diff_slots = current_slot.checked_sub(parent_slot).unwrap();
-        let latest_acceptable_current_time =
-            BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
-
-        if parent_time < current_time && current_time <= latest_acceptable_current_time {
-            Ok(())
-        } else {
-            Err(BlockComponentVerifierError::AlpenglowClockBoundsExceeded)
-        }
-    }
-
-    pub fn finish(
-        &self,
-        bank: Arc<Bank>,
-        parent_bank: Arc<Bank>,
-    ) -> result::Result<(), BlockComponentVerifierError> {
+    pub fn finish(&self) -> result::Result<(), BlockComponentVerifierError> {
         if !self.has_footer {
             return Err(BlockComponentVerifierError::MissingBlockFooter);
         }
@@ -98,8 +38,6 @@ impl BlockComponentVerifier {
         if !self.has_header {
             return Err(BlockComponentVerifierError::MissingBlockHeader);
         }
-
-        self.check_alpenglow_clock_bounds(bank.clone(), parent_bank)?;
 
         Ok(())
     }
@@ -139,7 +77,6 @@ impl BlockComponentVerifier {
         // Update the bank's clock timestamp with the value from the block footer
         let parent_epoch = Some(parent_bank.epoch());
         bank.set_clock(parent_epoch, footer.block_producer_time_nanos);
-        bank.set_alpenglow_clock(footer.block_producer_time_nanos);
 
         self.has_footer = true;
         Ok(())
@@ -166,7 +103,6 @@ mod tests {
         solana_entry::block_component::{BlockFooterV1, BlockHeaderV1},
         solana_program::{hash::Hash, pubkey::Pubkey},
         std::sync::Arc,
-        test_case::test_case,
     };
 
     fn create_test_bank() -> Arc<Bank> {
@@ -182,71 +118,24 @@ mod tests {
         ))
     }
 
-    #[test_case(1u64 ; "1 slot difference")]
-    #[test_case(2u64 ; "2 slot difference")]
-    #[test_case(4u64 ; "4 slot difference")]
-    #[test_case(8u64 ; "8 slot difference")]
-    #[test_case(16u64 ; "16 slot difference")]
-    fn test_latest_acceptable_time(diff_slots: u64) {
-        let parent_time = 1_000_000_000; // 1 second in nanos
-        let expected = parent_time
-            + (DELTA_BLOCK.as_nanos() as u64 * CLOCK_TIMEOUT_MULTIPLIER as u64 * diff_slots);
-        assert_eq!(
-            BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots),
-            expected
-        );
-    }
-
-    #[test]
-    fn test_skewed_time_backward() {
-        // When current_time <= parent_time, should return current_time + 1
-        let current_time = 1_000_000_000;
-        let parent_time = 1_500_000_000;
-        let diff_slots = 1;
-        assert_eq!(
-            BlockComponentVerifier::skewed_time(current_time, parent_time, diff_slots),
-            current_time + 1
-        );
-    }
-
-    #[test]
-    fn test_skewed_time_forward() {
-        // When current_time > parent_time, should return min(latest_acceptable, current_time)
-        let parent_time = 1_000_000_000;
-        let current_time = 1_500_000_000;
-        let diff_slots = 1;
-        let result = BlockComponentVerifier::skewed_time(current_time, parent_time, diff_slots);
-
-        // Since current_time is likely within acceptable bounds, should return current_time
-        assert_eq!(result, current_time);
-    }
-
     #[test]
     fn test_missing_header_error() {
         let verifier = BlockComponentVerifier::new();
-        let parent = create_test_bank();
-        let bank = create_child_bank(&parent, 1);
 
         // Set footer but not header
-        bank.set_alpenglow_clock(1_000_000_000);
-
         let mut v = verifier;
         v.has_footer = true;
 
-        let result = v.finish(bank, parent);
+        let result = v.finish();
         assert_eq!(result, Err(BlockComponentVerifierError::MissingBlockHeader));
     }
 
     #[test]
     fn test_missing_footer_error() {
-        let verifier = BlockComponentVerifier::new();
-        let parent = create_test_bank();
-        let bank = create_child_bank(&parent, 1);
+        let mut verifier = BlockComponentVerifier::new();
+        verifier.has_header = true;
 
-        let mut v = verifier;
-        v.has_header = true;
-
-        let result = v.finish(bank, parent);
+        let result = verifier.finish();
         assert_eq!(result, Err(BlockComponentVerifierError::MissingBlockFooter));
     }
 
@@ -309,9 +198,6 @@ mod tests {
 
         assert!(verifier.has_footer);
 
-        // Verify alpenglow_timestamp_nanos is set correctly
-        assert_eq!(bank.get_alpenglow_clock(), Some(footer_time));
-
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();
         assert_eq!(clock.unix_timestamp, (footer_time / 1_000_000_000) as i64);
@@ -327,147 +213,6 @@ mod tests {
 
         verifier.on_header(&header).unwrap();
         assert!(verifier.has_header);
-    }
-
-    #[test]
-    fn test_clock_bounds_parent_missing_timestamp() {
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        let bank = create_child_bank(&parent, 1);
-
-        // Set current bank timestamp but not parent (simulates genesis case)
-        bank.set_alpenglow_clock(1_000_000_000);
-
-        // Should succeed and skip bounds check
-        let result = verifier.finish(bank, parent);
-        assert!(result.is_ok());
-    }
-
-    #[test_case(1u64, 100_000_000u64 ; "1 slot 100ms later")]
-    #[test_case(2u64, 500_000_000u64 ; "2 slots 500ms later")]
-    #[test_case(4u64, 1_000_000_000u64 ; "4 slots 1s later")]
-    #[test_case(8u64, 2_000_000_000u64 ; "8 slots 2s later")]
-    fn test_clock_bounds_valid_time_progression(slot_diff: u64, time_offset: u64) {
-        let parent_time = 1_000_000_000_000_000_000u64; // nanos
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
-        let bank = create_child_bank(&parent, slot_diff);
-        let current_time = parent_time + time_offset;
-        bank.set_alpenglow_clock(current_time);
-
-        // Should succeed - time is progressing normally within bounds
-        let result = verifier.finish(bank, parent);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_clock_bounds_time_not_progressing() {
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        let parent_time = 1_000_000_000_000_000_000u64;
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
-        let bank = create_child_bank(&parent, 1);
-        let current_time = parent_time; // Same time, not progressing
-        bank.set_alpenglow_clock(current_time);
-
-        // Should fail - time must progress
-        let result = verifier.finish(bank, parent);
-        assert_eq!(
-            result,
-            Err(BlockComponentVerifierError::AlpenglowClockBoundsExceeded)
-        );
-    }
-
-    #[test_case(1u64, 10_000_000_000u64 ; "1 slot 10s ahead")]
-    #[test_case(2u64, 20_000_000_000u64 ; "2 slots 20s ahead")]
-    #[test_case(4u64, 40_000_000_000u64 ; "4 slots 40s ahead")]
-    #[test_case(8u64, 80_000_000_000u64 ; "8 slots 80s ahead")]
-    fn test_clock_bounds_time_too_far_ahead(slot_diff: u64, time_offset: u64) {
-        let parent_time = 1_000_000_000_000_000_000u64;
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
-        let bank = create_child_bank(&parent, slot_diff);
-        let current_time = parent_time + time_offset;
-        bank.set_alpenglow_clock(current_time);
-
-        // Should fail - time is too far ahead
-        let result = verifier.finish(bank, parent);
-        assert_eq!(
-            result,
-            Err(BlockComponentVerifierError::AlpenglowClockBoundsExceeded)
-        );
-    }
-
-    #[test_case(1u64 ; "1 slot at exact boundary")]
-    #[test_case(2u64 ; "2 slots at exact boundary")]
-    #[test_case(4u64 ; "4 slots at exact boundary")]
-    #[test_case(8u64 ; "8 slots at exact boundary")]
-    #[test_case(16u64 ; "16 slots at exact boundary")]
-    fn test_clock_bounds_at_exact_boundary(diff_slots: u64) {
-        let parent_time = 1_000_000_000_000_000_000u64;
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
-        let bank = create_child_bank(&parent, diff_slots);
-        let current_time = BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots);
-        bank.set_alpenglow_clock(current_time);
-
-        // Should succeed - exactly at the boundary
-        let result = verifier.finish(bank, parent);
-        assert!(result.is_ok());
-    }
-
-    #[test_case(1u64 ; "1 slot just beyond boundary")]
-    #[test_case(2u64 ; "2 slots just beyond boundary")]
-    #[test_case(4u64 ; "4 slots just beyond boundary")]
-    #[test_case(8u64 ; "8 slots just beyond boundary")]
-    #[test_case(16u64 ; "16 slots just beyond boundary")]
-    fn test_clock_bounds_just_beyond_boundary(diff_slots: u64) {
-        let parent_time = 1_000_000_000_000_000_000u64;
-        let mut verifier = BlockComponentVerifier::new();
-        verifier.has_header = true;
-        verifier.has_footer = true;
-
-        let parent = create_test_bank();
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
-        let bank = create_child_bank(&parent, diff_slots);
-        let current_time =
-            BlockComponentVerifier::latest_acceptable_time(parent_time, diff_slots) + 1;
-        bank.set_alpenglow_clock(current_time);
-
-        // Should fail - just beyond the boundary
-        let result = verifier.finish(bank, parent);
-        assert_eq!(
-            result,
-            Err(BlockComponentVerifierError::AlpenglowClockBoundsExceeded)
-        );
     }
 
     #[test]
@@ -504,9 +249,6 @@ mod tests {
         verifier.on_marker(bank.clone(), parent, &marker).unwrap();
         assert!(verifier.has_footer);
 
-        // Verify alpenglow_timestamp_nanos is set correctly
-        assert_eq!(bank.get_alpenglow_clock(), Some(footer_time));
-
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();
         assert_eq!(clock.unix_timestamp, (footer_time / 1_000_000_000) as i64);
@@ -517,9 +259,6 @@ mod tests {
         let mut verifier = BlockComponentVerifier::new();
         let parent = create_test_bank();
         let parent_time = 1_000_000_000_000_000_000u64;
-        // Set parent clock BEFORE creating child
-        parent.set_alpenglow_clock(parent_time);
-
         let bank = create_child_bank(&parent, 1);
 
         // Process header
@@ -538,9 +277,7 @@ mod tests {
             .on_footer(bank.clone(), parent.clone(), &footer)
             .unwrap();
 
-        // Verify alpenglow_timestamp_nanos is set correctly
         let expected_timestamp = parent_time + 100_000_000;
-        assert_eq!(bank.get_alpenglow_clock(), Some(expected_timestamp));
 
         // Verify clock sysvar is set correctly (should be in seconds, not nanoseconds)
         let clock = bank.clock();
@@ -550,7 +287,7 @@ mod tests {
         );
 
         // Finish verification
-        let result = verifier.finish(bank, parent);
+        let result = verifier.finish();
         assert!(result.is_ok());
     }
 }

@@ -116,12 +116,11 @@ use {
         invoke_context::BuiltinFunctionWithContext, loaded_programs::ProgramCacheEntry,
     },
     solana_pubkey::{Pubkey, PubkeyHasherBuilder},
-    solana_rent::Rent,
     solana_reward_info::RewardInfo,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
-    solana_sdk_ids::{bpf_loader_upgradeable, incinerator, native_loader, system_program},
+    solana_sdk_ids::{bpf_loader_upgradeable, incinerator, native_loader},
     solana_sha256_hasher::hashv,
     solana_signature::Signature,
     solana_slot_hashes::SlotHashes,
@@ -175,7 +174,7 @@ use {
                 AtomicBool, AtomicI64, AtomicU64,
                 Ordering::{self, AcqRel, Acquire, Relaxed},
             },
-            Arc, LazyLock, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+            Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
         time::{Duration, Instant},
     },
@@ -221,13 +220,6 @@ pub type BankStatusCache = StatusCache<Result<()>>;
     frozen_abi(digest = "FUttxQbsCnX5VMRuj8c2sUxZKNARUTaomdgsbg8wM3D6")
 )]
 pub type BankSlotDelta = SlotDelta<Result<()>>;
-
-/// The off-curve account where we store the Alpenglow clock
-pub static ALPENGLOW_CLOCK_ACCOUNT: LazyLock<Pubkey> = LazyLock::new(|| {
-    let (pubkey, _) =
-        Pubkey::find_program_address(&[b"alpenclock"], &agave_feature_set::alpenglow::id());
-    pubkey
-});
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SquashTiming {
@@ -2048,30 +2040,6 @@ impl Bank {
             .unwrap_or_default()
     }
 
-    pub fn get_alpenglow_clock(&self) -> Option<u64> {
-        self.get_account(&ALPENGLOW_CLOCK_ACCOUNT).map(|acct| {
-            acct.deserialize_data()
-                .expect("Programmer error deserializing genesis certificate")
-        })
-    }
-
-    pub fn set_alpenglow_clock(&self, alpenglow_timestamp_nanos: u64) {
-        let lamports =
-            Rent::default().minimum_balance(std::mem::size_of_val(&alpenglow_timestamp_nanos));
-
-        let alpenclock_account_data = AccountSharedData::new_data(
-            lamports,
-            &alpenglow_timestamp_nanos,
-            &system_program::id(),
-        )
-        .unwrap();
-
-        self.store_account_and_update_capitalization(
-            &ALPENGLOW_CLOCK_ACCOUNT,
-            &alpenclock_account_data,
-        );
-    }
-
     pub fn set_clock(&self, parent_epoch: Option<Epoch>, unix_timestamp_nanos: u64) {
         let updated_unix_timestamp = unix_timestamp_nanos as i64;
         let updated_unix_timestamp = updated_unix_timestamp / 1_000_000_000;
@@ -2103,7 +2071,7 @@ impl Bank {
         });
     }
 
-    pub fn update_clock(&self, parent_epoch: Option<Epoch>) {
+    fn update_clock(&self, parent_epoch: Option<Epoch>) {
         let mut unix_timestamp = self.clock().unix_timestamp;
         // set epoch_start_timestamp to None to warp timestamp
         let epoch_start_timestamp = {

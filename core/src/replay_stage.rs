@@ -3472,32 +3472,23 @@ impl ReplayStage {
                 // Verify block components (header, footer, clock bounds) before freezing
                 // Only verify blocks that were replayed from blockstore (not leader blocks)
                 if !is_leader_block && migration_status.is_alpenglow_enabled() {
-                    if let Some(parent_bank) = bank.parent() {
-                        if let Err(err) = bank
-                            .block_component_verifier
-                            .read()
-                            .unwrap()
-                            .finish(bank.clone_without_scheduler(), parent_bank)
-                        {
-                            warn!(
-                                "Block component verification failed for slot {bank_slot}: {err:?}",
-                            );
-                            let root = bank_forks.read().unwrap().root();
-                            Self::mark_dead_slot(
-                                blockstore,
-                                bank,
-                                root,
-                                &BlockstoreProcessorError::BlockComponentVerifier(err),
-                                rpc_subscriptions,
-                                slot_status_notifier,
-                                progress,
-                                duplicate_slots_to_repair,
-                                ancestor_hashes_replay_update_sender,
-                                purge_repair_slot_counter,
-                                &mut tbft_structs,
-                            );
-                            continue;
-                        }
+                    if let Err(err) = bank.block_component_verifier.read().unwrap().finish() {
+                        warn!("Block component verification failed for slot {bank_slot}: {err:?}",);
+                        let root = bank_forks.read().unwrap().root();
+                        Self::mark_dead_slot(
+                            blockstore,
+                            bank,
+                            root,
+                            &BlockstoreProcessorError::BlockComponentVerifier(err),
+                            rpc_subscriptions,
+                            slot_status_notifier,
+                            progress,
+                            duplicate_slots_to_repair,
+                            ancestor_hashes_replay_update_sender,
+                            purge_repair_slot_counter,
+                            &mut tbft_structs,
+                        );
+                        continue;
                     }
                 }
 

@@ -29,7 +29,6 @@ use {
     solana_runtime::{
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
-        block_component_verifier::BlockComponentVerifier,
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo, votor::LeaderWindowNotifier},
@@ -375,31 +374,11 @@ fn record_and_complete_block(
         .bank()
         .expect("Bank cannot have been cleared as BlockCreationLoop is the only modifier");
 
-    let (parent_epoch, skewed_time) = if let Some(parent_bank) = bank.parent() {
-        let parent_epoch = parent_bank.epoch();
-
-        let skewed_time =
-            if let Some(parent_block_producer_time_nanos) = parent_bank.get_alpenglow_clock() {
-                let diff_slots = bank.slot() - parent_bank.slot();
-
-                BlockComponentVerifier::skewed_time(
-                    block_producer_time_nanos,
-                    parent_block_producer_time_nanos,
-                    diff_slots,
-                )
-            } else {
-                block_producer_time_nanos
-            };
-
-        (Some(parent_epoch), skewed_time)
-    } else {
-        (None, block_producer_time_nanos)
-    };
-
-    let footer = produce_block_footer(skewed_time);
+    let parent_epoch = bank.parent().map(|parent_bank| parent_bank.epoch());
+    let footer = produce_block_footer(block_producer_time_nanos);
     w_poh_recorder.send_marker(footer)?;
 
-    bank.set_clock(parent_epoch, skewed_time);
+    bank.set_clock(parent_epoch, block_producer_time_nanos);
 
     // Alpentick and clear bank
     trace!(
