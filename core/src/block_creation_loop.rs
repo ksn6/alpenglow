@@ -30,6 +30,7 @@ use {
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
         block_component_processor::BlockComponentProcessor,
+        installed_scheduler_pool::BankWithScheduler,
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo},

@@ -51,6 +51,7 @@ use {
     },
     solana_runtime::{
         bank_forks::BankForks, commitment::BlockCommitmentCache,
+        installed_scheduler_pool::BankWithScheduler,
         prioritization_fee_cache::PrioritizationFeeCache, snapshot_controller::SnapshotController,
         vote_sender_types::ReplayVoteSender,
     },
