@@ -210,6 +210,7 @@ impl Tvu {
         voting_service_test_override: Option<VotingServiceOverride>,
         votor_event_sender: VotorEventSender,
         votor_event_receiver: VotorEventReceiver,
+        optimistic_parent_sender: Sender<LeaderWindowInfo>,
         alpenglow_quic_server_config: QuicServerParams,
         staked_nodes: Arc<RwLock<StakedNodes>>,
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
@@ -403,6 +404,7 @@ impl Tvu {
             dumped_slots_sender,
             votor_event_sender,
             own_vote_sender: consensus_message_sender,
+            optimistic_parent_sender,
         };
 
         let replay_receivers = ReplayReceivers {
@@ -677,6 +679,7 @@ pub mod tests {
         );
         let (votor_event_sender, votor_event_receiver) = unbounded();
         let highest_parent_ready = Arc::new(RwLock::default());
+        let (optimistic_parent_sender, _optimistic_parent_receiver) = unbounded();
 
         let tvu = Tvu::new(
             &vote_keypair.pubkey(),
@@ -750,6 +753,7 @@ pub mod tests {
             None,
             votor_event_sender,
             votor_event_receiver,
+            optimistic_parent_sender,
             QuicServerParams::default_for_tests(),
             Arc::new(RwLock::new(StakedNodes::default())),
             Arc::new(RwLock::new(KeyUpdaters::default())),

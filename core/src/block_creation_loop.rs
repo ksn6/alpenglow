@@ -87,6 +87,7 @@ pub struct BlockCreationLoopConfig {
 
     // Channel to receive RecordReceiver from PohService
     pub record_receiver_receiver: Receiver<RecordReceiver>,
+    pub optimistic_parent_receiver: Receiver<LeaderWindowInfo>,
 }
 
 struct LeaderContext {
@@ -154,6 +155,7 @@ fn start_loop(config: BlockCreationLoopConfig) {
         leader_window_info_receiver,
         replay_highest_frozen,
         highest_parent_ready,
+        optimistic_parent_receiver,
     } = config;
 
     // Similar to Votor, if this loop dies kill the validator
@@ -243,6 +245,12 @@ fn start_loop(config: BlockCreationLoopConfig) {
 
             info
         };
+
+        // TODO(ksn): fast leader handover. Once we can stream parent ready events over a channel,
+        // we'll have the two channels race each other to determine what to do.
+        //
+        // For now, just drain the channel and don't do anything with optimistic parents.
+        while let Ok(_optimistic_parent) = optimistic_parent_receiver.try_recv() {}
 
         trace!("Received window notification for {start_slot} to {end_slot} parent: {parent_slot}");
         if let Err(e) = produce_window(start_slot, end_slot, parent_slot, skip_timer, &mut ctx) {
