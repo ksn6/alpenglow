@@ -1413,6 +1413,11 @@ impl Validator {
 
         let replay_highest_frozen = Arc::new(ReplayHighestFrozen::default());
         let leader_window_notifier = Arc::new(LeaderWindowNotifier::default());
+
+        // Pass RecordReceiver from PohService to BlockCreationLoop when shutting down. Gives us a strong guarentee
+        // that both block producers are not running at the same time
+        let (record_receiver_sender, record_receiver_receiver) = bounded(1);
+
         let poh_service = PohService::new(
             poh_recorder.clone(),
             &genesis_config.poh_config,
@@ -1420,14 +1425,14 @@ impl Validator {
             bank_forks.read().unwrap().root_bank().ticks_per_slot(),
             config.poh_pinned_cpu_core,
             config.poh_hashes_per_batch,
-            record_receiver.clone(),
+            record_receiver,
             poh_service_message_receiver,
             migration_status.clone(),
+            record_receiver_sender,
         );
 
         let block_creation_loop_config = BlockCreationLoopConfig {
             exit: exit.clone(),
-            migration_status: migration_status.clone(),
             bank_forks: bank_forks.clone(),
             blockstore: blockstore.clone(),
             cluster_info: cluster_info.clone(),
@@ -1436,9 +1441,9 @@ impl Validator {
             rpc_subscriptions: rpc_subscriptions.clone(),
             banking_tracer: banking_tracer.clone(),
             slot_status_notifier: slot_status_notifier.clone(),
-            record_receiver: record_receiver.clone(),
             leader_window_notifier: leader_window_notifier.clone(),
             replay_highest_frozen: replay_highest_frozen.clone(),
+            record_receiver_receiver,
         };
         let block_creation_loop = BlockCreationLoop::new(block_creation_loop_config);
 
