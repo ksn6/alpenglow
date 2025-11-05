@@ -30,7 +30,6 @@ use {
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
         block_component_processor::BlockComponentProcessor,
-        installed_scheduler_pool::BankWithScheduler,
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo},
@@ -50,7 +49,7 @@ mod stats;
 
 enum ParentSource {
     ParentReady(LeaderWindowInfo),
-    OptimisticParent(BankWithScheduler),
+    OptimisticParent(LeaderWindowInfo),
 }
 
 pub struct BlockCreationLoop {
@@ -272,8 +271,12 @@ fn start_loop(config: BlockCreationLoopConfig) {
             skip_timer,
         } = match window_source {
             ParentSource::ParentReady(info) => info,
-            ParentSource::OptimisticParent(_bank) => {
+            ParentSource::OptimisticParent(info) => {
                 // Skip optimistic parent events for now
+                println!(
+                    "{my_pubkey:?} {} {} !!!!! FOUND OPTIMISTIC PARENT !!!!!",
+                    info.start_slot, info.end_slot,
+                );
                 continue;
             }
         };
