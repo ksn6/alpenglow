@@ -46,7 +46,7 @@ use {
     solana_keypair::Keypair,
     solana_ledger::{
         block_error::BlockError,
-        blockstore::Blockstore,
+        blockstore::{Blockstore, PurgeType},
         blockstore_processor::{
             self, BlockstoreProcessorError, ConfirmationProgress, ExecuteBatchesInternalMetrics,
             ReplaySlotStats, TransactionStatusSender,
@@ -58,7 +58,9 @@ use {
     solana_measure::measure::Measure,
     solana_poh::{
         poh_controller::PohController,
-        poh_recorder::{PohLeaderStatus, PohRecorder, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
+        poh_recorder::{
+            PohLeaderStatus, PohRecorder, SharedWorkingBank, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS,
+        },
     },
     solana_pubkey::Pubkey,
     solana_rpc::{
@@ -871,6 +873,23 @@ impl ReplayStage {
                 }
                 replay_active_banks_time.stop();
 
+                // Check if we've completed the migration conditions
+                if migration_status.is_ready_to_enable() {
+                    Self::enable_alpenglow(
+                        &exit,
+                        &my_pubkey,
+                        migration_status.as_ref(),
+                        bank_forks.as_ref(),
+                        blockstore.as_ref(),
+                        &mut poh_controller,
+                        &shared_poh_bank,
+                        leader_schedule_cache.as_ref(),
+                        &mut ancestors,
+                        &mut descendants,
+                        &mut progress,
+                    );
+                }
+
                 let forks_root = bank_forks.read().unwrap().root();
                 let start_leader_time = if !migration_status.is_alpenglow_enabled() {
                     debug_assert!(votor_event_receiver.is_empty());
@@ -1349,6 +1368,104 @@ impl ReplayStage {
         })
     }
 
+    /// Enables alpenglow
+    /// - Clears any in progress leader blocks
+    /// - Clears any TowerBFT blocks past the genesis block
+    /// - Shutdown poh
+    /// - Start block creation loop and Votor
+    ///
+    /// Should only be called if we have received a genesis certificate on our view of the genesis block.
+    #[allow(clippy::too_many_arguments)]
+    fn enable_alpenglow(
+        exit: &AtomicBool,
+        my_pubkey: &Pubkey,
+        migration_status: &MigrationStatus,
+        bank_forks: &RwLock<BankForks>,
+        blockstore: &Blockstore,
+        poh_controller: &mut PohController,
+        shared_poh_bank: &SharedWorkingBank,
+        leader_schedule_cache: &LeaderScheduleCache,
+        ancestors: &mut HashMap<Slot, HashSet<Slot>>,
+        descendants: &mut HashMap<Slot, HashSet<Slot>>,
+        progress: &mut ProgressMap,
+    ) {
+        let root_bank = bank_forks.read().unwrap().root_bank();
+
+        let genesis_block @ (genesis_slot, block_id) = migration_status.genesis_block();
+        warn!(
+            "{my_pubkey}: Alpenglow genesis vote has succeeded enabling alpenglow. Genesis block \
+             {genesis_block:?}"
+        );
+
+        let genesis_bank = bank_forks.read().unwrap().get(genesis_slot).expect(
+            "{my_pubkey}: Attempting to enable alpenglow before receiving the genesis block",
+        );
+        assert!(genesis_bank.is_frozen());
+
+        if genesis_bank.block_id() != Some(block_id) {
+            panic!(
+                "{my_pubkey}: Attempting to enable alpenglow but we have the wrong version of the \
+                 genesis block our version: ({genesis_slot}, {:?}), certified version \
+                 ({genesis_slot}, {block_id})",
+                genesis_bank.block_id()
+            );
+        }
+
+        // Reset poh to the genesis block. This has to be done first before we can clear banks to
+        // avoid any inflight issues with transaction recording.
+        Self::reset_poh_recorder(
+            my_pubkey,
+            blockstore,
+            genesis_bank,
+            poh_controller,
+            leader_schedule_cache,
+        );
+        while poh_controller.has_pending_message() || shared_poh_bank.load().is_some() {
+            std::hint::spin_loop();
+        }
+
+        // Purge all slots greater than the genesis slot from AccountsDB & blockstore
+        let slots_to_purge: Vec<Slot> = bank_forks
+            .read()
+            .unwrap()
+            .banks()
+            .iter()
+            .filter_map(|(slot, _)| (*slot > genesis_slot).then_some(*slot))
+            .collect();
+        for slot in slots_to_purge.into_iter() {
+            warn!("{my_pubkey}: Purging poh block in slot {slot}");
+            Self::purge_unconfirmed_slot(
+                slot,
+                ancestors,
+                descendants,
+                progress,
+                root_bank.as_ref(),
+                bank_forks,
+                blockstore,
+            );
+        }
+
+        // Purge any partial shreds greater than the genesis slot
+        let start_slot = genesis_slot + 1;
+        let end_slot = blockstore
+            .highest_slot()
+            .unwrap()
+            .expect("Highest slot must be present as blockstore is non-empty");
+        if end_slot >= start_slot {
+            warn!("{my_pubkey}: Purging shreds {start_slot} to {end_slot} from blockstore");
+            blockstore.purge_from_next_slots(start_slot, end_slot);
+            blockstore.purge_slots(start_slot, end_slot, PurgeType::Exact);
+        }
+
+        migration_status.enable_alpenglow(exit);
+
+        assert!(migration_status.is_alpenglow_enabled());
+        datapoint_info!(
+            "migration-complete",
+            ("genesis_slot", genesis_slot as i64, i64),
+        );
+    }
+
     /// Loads the tower from `tower_storage` with identity `node_pubkey`.
     ///
     /// If the tower is missing or too old, a tower is constructed from bank forks.
@@ -1711,7 +1828,7 @@ impl ReplayStage {
                         );
                     }
 
-                    Self::purge_unconfirmed_duplicate_slot(
+                    Self::purge_unconfirmed_slot(
                         *duplicate_slot,
                         ancestors,
                         descendants,
@@ -1809,8 +1926,8 @@ impl ReplayStage {
         }
     }
 
-    fn purge_unconfirmed_duplicate_slot(
-        duplicate_slot: Slot,
+    fn purge_unconfirmed_slot(
+        slot_to_purge: Slot,
         ancestors: &mut HashMap<Slot, HashSet<Slot>>,
         descendants: &mut HashMap<Slot, HashSet<Slot>>,
         progress: &mut ProgressMap,
@@ -1818,15 +1935,15 @@ impl ReplayStage {
         bank_forks: &RwLock<BankForks>,
         blockstore: &Blockstore,
     ) {
-        warn!("purging slot {duplicate_slot}");
+        warn!("purging slot {slot_to_purge}");
 
         // Doesn't need to be root bank, just needs a common bank to
         // access the status cache and accounts
-        let slot_descendants = descendants.get(&duplicate_slot).cloned();
+        let slot_descendants = descendants.get(&slot_to_purge).cloned();
         if slot_descendants.is_none() {
             // Root has already moved past this slot, no need to purge it
-            if root_bank.slot() <= duplicate_slot {
-                blockstore.clear_unconfirmed_slot(duplicate_slot);
+            if root_bank.slot() <= slot_to_purge {
+                blockstore.clear_unconfirmed_slot(slot_to_purge);
             }
 
             return;
@@ -1835,12 +1952,7 @@ impl ReplayStage {
         // Clear the ancestors/descendants map to keep them
         // consistent
         let slot_descendants = slot_descendants.unwrap();
-        Self::purge_ancestors_descendants(
-            duplicate_slot,
-            &slot_descendants,
-            ancestors,
-            descendants,
-        );
+        Self::purge_ancestors_descendants(slot_to_purge, &slot_descendants, ancestors, descendants);
 
         // Grab the Slot and BankId's of the banks we need to purge, then clear the banks
         // from BankForks
@@ -1849,7 +1961,7 @@ impl ReplayStage {
             w_bank_forks.dump_slots(
                 slot_descendants
                     .iter()
-                    .chain(std::iter::once(&duplicate_slot)),
+                    .chain(std::iter::once(&slot_to_purge)),
             )
         };
 
@@ -1878,14 +1990,14 @@ impl ReplayStage {
                 // blockstore.
                 warn!(
                     "purging duplicate descendant: {slot} with slot_id {slot_id} and bank hash \
-                     {bank_hash}, of slot {duplicate_slot}"
+                     {bank_hash}, of slot {slot_to_purge}"
                 );
                 // Clear the slot-related data in blockstore. This will:
                 // 1) Clear old shreds allowing new ones to be inserted
                 // 2) Clear the "dead" flag allowing ReplayStage to start replaying
                 // this slot
                 blockstore.clear_unconfirmed_slot(slot);
-            } else if slot == duplicate_slot {
+            } else if slot == slot_to_purge {
                 warn!("purging duplicate slot: {slot} with slot_id {slot_id}");
                 blockstore.clear_unconfirmed_slot(slot);
             } else {
@@ -1895,7 +2007,7 @@ impl ReplayStage {
                 // will be handled in the next round of repair/replay - so we just clear the dead
                 // flag for now.
                 warn!(
-                    "not purging descendant {slot} of slot {duplicate_slot} as it is dead. \
+                    "not purging descendant {slot} of slot {slot_to_purge} as it is dead. \
                      resetting dead flag instead"
                 );
                 // Clear the "dead" flag allowing ReplayStage to start replaying
@@ -6561,7 +6673,7 @@ pub(crate) mod tests {
 
         // Purging slot 5 should purge only slots 5 and its descendant 6. Since 7 is already dead,
         // it gets reset but not removed
-        ReplayStage::purge_unconfirmed_duplicate_slot(
+        ReplayStage::purge_unconfirmed_slot(
             5,
             &mut ancestors,
             &mut descendants,
@@ -6601,7 +6713,7 @@ pub(crate) mod tests {
         // Purging slot 4 should purge only slot 4
         let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
-        ReplayStage::purge_unconfirmed_duplicate_slot(
+        ReplayStage::purge_unconfirmed_slot(
             4,
             &mut ancestors,
             &mut descendants,
@@ -6624,7 +6736,7 @@ pub(crate) mod tests {
         // Purging slot 1 should purge both forks 2 and 3 but leave 7 untouched as it is dead
         let mut descendants = bank_forks.read().unwrap().descendants();
         let mut ancestors = bank_forks.read().unwrap().ancestors();
-        ReplayStage::purge_unconfirmed_duplicate_slot(
+        ReplayStage::purge_unconfirmed_slot(
             1,
             &mut ancestors,
             &mut descendants,
@@ -6691,7 +6803,7 @@ pub(crate) mod tests {
             .expect("Failed to mark slot 6 as dead in blockstore");
 
         // Purge slot 3 as it is duplicate, this should also purge slot 5 but not touch 6 and 7
-        ReplayStage::purge_unconfirmed_duplicate_slot(
+        ReplayStage::purge_unconfirmed_slot(
             3,
             &mut ancestors,
             &mut descendants,
