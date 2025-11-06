@@ -139,6 +139,23 @@ impl MigrationPhase {
         )
     }
 
+    /// Check if we are in the process of discovering the genesis block, and `slot` could qualify
+    /// to be used for discovery. This entails that `slot` > `migration_slot`. The caller must additionally
+    /// check that the parent of `slot` is super-OC.
+    fn qualifies_for_genesis_discovery(&self, slot: Slot) -> bool {
+        match self {
+            MigrationPhase::Migration {
+                migration_slot,
+                genesis_block,
+                ..
+            } => genesis_block.is_none() && slot > *migration_slot,
+            MigrationPhase::PreFeatureActivation
+            | MigrationPhase::ReadyToEnable { .. }
+            | MigrationPhase::AlpenglowEnabled { .. }
+            | MigrationPhase::FullAlpenglowEpoch { .. } => false,
+        }
+    }
+
     /// Should we create / replay this bank in VoM?
     /// During the migrationary period before genesis has been found, we must validate that banks are VoM
     fn should_bank_be_vote_only(&self, bank_slot: Slot) -> bool {
@@ -326,6 +343,7 @@ impl MigrationStatus {
     }
 
     dispatch!(pub fn is_alpenglow_enabled(&self) -> bool);
+    dispatch!(pub fn qualifies_for_genesis_discovery(&self, slot: Slot) -> bool);
     dispatch!(pub fn should_bank_be_vote_only(&self, bank_slot: Slot) -> bool);
     dispatch!(pub fn should_report_commitment_or_root(&self, slot: Slot) -> bool);
     dispatch!(pub fn should_publish_epoch_slots(&self, slot: Slot) -> bool);
@@ -362,6 +380,20 @@ impl MigrationStatus {
         migration_slot
     }
 
+    /// The slot at which migration started.
+    ///
+    /// Should only be used during `Migration`
+    pub fn migration_slot(&self) -> Slot {
+        let MigrationPhase::Migration { migration_slot, .. } = &*self.phase.read().unwrap() else {
+            unreachable!(
+                "{}: Programmer error, attempting to retrieve migration slot while not in \
+                 migration",
+                self.my_pubkey
+            );
+        };
+        *migration_slot
+    }
+
     /// The block that is eligible to be the genesis block, which we wish to cast our genesis vote for.
     /// Returns `None` if we have not yet received an eligible block.
     ///
@@ -382,12 +414,12 @@ impl MigrationStatus {
     ///
     /// Should only be used during `Migration`, and transitions to `ReadyToEnable` if we have already
     /// received a genesis certificate and it matches.
-    pub fn set_genesis_block(&self, genesis_block_arg: Block) {
+    pub fn set_genesis_block(&self, discovered_genesis_block @ (slot, _): Block) {
         let mut phase = self.phase.write().unwrap();
         let MigrationPhase::Migration {
+            migration_slot,
             ref mut genesis_block,
             ref genesis_cert,
-            ..
         } = &mut *phase
         else {
             unreachable!(
@@ -397,13 +429,19 @@ impl MigrationStatus {
         };
         assert!(
             genesis_block.is_none(),
-            "Attempting to overwrite genesis block to {genesis_block_arg:?}. Programmer error"
+            "Attempting to overwrite genesis block to {discovered_genesis_block:?}. Programmer \
+             error"
+        );
+
+        assert!(
+            slot < *migration_slot,
+            "Attempting to set a genesis block that is past the migration start"
         );
         warn!(
-            "{} Setting genesis block {genesis_block_arg:?}",
+            "{} Setting genesis block {discovered_genesis_block:?}",
             self.my_pubkey
         );
-        *genesis_block = Some(genesis_block_arg);
+        *genesis_block = Some(discovered_genesis_block);
 
         let Some(genesis_cert) = genesis_cert else {
             return;
@@ -417,9 +455,9 @@ impl MigrationStatus {
             .unwrap_or(true)
         {
             panic!(
-                "{}: We wish to cast a genesis vote on {genesis_block_arg:?}, however we have \
-                 received a genesis certificate for ({slot}, {block_id}). This means there is \
-                 significant malicious activity causing two distinct forks to reach the \
+                "{}: We wish to cast a genesis vote on {discovered_genesis_block:?}, however we \
+                 have received a genesis certificate for ({slot}, {block_id}). This means there \
+                 is significant malicious activity causing two distinct forks to reach the \
                  {GENESIS_VOTE_THRESHOLD}. We cannot recover without operator intervention.",
                 self.my_pubkey
             );
@@ -438,9 +476,9 @@ impl MigrationStatus {
     pub fn set_genesis_certificate(&self, cert: Arc<Certificate>) {
         let mut phase = self.phase.write().unwrap();
         let MigrationPhase::Migration {
+            migration_slot,
             ref genesis_block,
             ref mut genesis_cert,
-            ..
         } = &mut *phase
         else {
             unreachable!(
@@ -451,7 +489,17 @@ impl MigrationStatus {
         let CertificateType::Genesis(slot, block_id) = cert.cert_type else {
             unreachable!("Programmer error adding invalid genesis certificate");
         };
+
+        assert!(
+            slot < *migration_slot,
+            "Attempting to set a genesis certificate past the migration start"
+        );
+        warn!(
+            "{} Setting genesis cert for ({slot},{block_id:?})",
+            self.my_pubkey
+        );
         *genesis_cert = Some(cert.clone());
+
         let Some(genesis_block) = genesis_block else {
             return;
         };
