@@ -63,6 +63,7 @@ use {
         VersionedConfirmedBlock, VersionedConfirmedBlockWithEntries,
         VersionedTransactionWithStatusMeta,
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         borrow::Cow,
         cell::RefCell,
@@ -1632,7 +1633,10 @@ impl Blockstore {
         // However, we are only purging and repairing the parent slot here. Since the child will not be
         // reinserted the chaining will be lost. In order for bank forks discovery to ingest the child,
         // we must retain the chain by preserving `next_slots`.
-        match self.purge_slot_cleanup_chaining(slot) {
+        match self.purge_slot_cleanup_chaining(
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        ) {
             Ok(_) => {}
             Err(BlockstoreError::SlotUnavailable) => {
                 error!("clear_unconfirmed_slot() called on slot {slot} with no SlotMeta")
@@ -3000,6 +3004,7 @@ impl Blockstore {
         &self,
         slot: Slot,
         require_previous_blockhash: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<VersionedConfirmedBlock> {
         self.rpc_api_metrics
             .num_get_rooted_block
@@ -3007,7 +3012,7 @@ impl Blockstore {
         let _lock = self.check_lowest_cleanup_slot(slot)?;
 
         if self.is_root(slot) {
-            return self.get_complete_block(slot, require_previous_blockhash);
+            return self.get_complete_block(slot, require_previous_blockhash, migration_status);
         }
         Err(BlockstoreError::SlotNotRooted)
     }
@@ -3016,12 +3021,14 @@ impl Blockstore {
         &self,
         slot: Slot,
         require_previous_blockhash: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<VersionedConfirmedBlock> {
         self.do_get_complete_block_with_entries(
             slot,
             require_previous_blockhash,
             false,
             /*allow_dead_slots:*/ false,
+            migration_status,
         )
         .map(|result| result.block)
     }
@@ -3030,6 +3037,7 @@ impl Blockstore {
         &self,
         slot: Slot,
         require_previous_blockhash: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<VersionedConfirmedBlockWithEntries> {
         self.rpc_api_metrics
             .num_get_rooted_block_with_entries
@@ -3042,6 +3050,7 @@ impl Blockstore {
                 require_previous_blockhash,
                 true,
                 /*allow_dead_slots:*/ false,
+                migration_status,
             );
         }
         Err(BlockstoreError::SlotNotRooted)
@@ -3054,12 +3063,14 @@ impl Blockstore {
         require_previous_blockhash: bool,
         populate_entries: bool,
         allow_dead_slots: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<VersionedConfirmedBlockWithEntries> {
         self.do_get_complete_block_with_entries(
             slot,
             require_previous_blockhash,
             populate_entries,
             allow_dead_slots,
+            migration_status,
         )
     }
 
@@ -3069,6 +3080,7 @@ impl Blockstore {
         require_previous_blockhash: bool,
         populate_entries: bool,
         allow_dead_slots: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<VersionedConfirmedBlockWithEntries> {
         let Some(slot_meta) = self.meta_cf.get(slot)? else {
             trace!("do_get_complete_block_with_entries() failed for {slot} (missing SlotMeta)");
@@ -3079,6 +3091,7 @@ impl Blockstore {
                 slot,
                 /*shred_start_index:*/ 0,
                 allow_dead_slots,
+                migration_status,
             )?;
             if !slot_entries.is_empty() {
                 let blockhash = slot_entries
@@ -3121,6 +3134,7 @@ impl Blockstore {
                             parent_slot,
                             /*shred_start_index:*/ 0,
                             allow_dead_slots,
+                            migration_status,
                         )
                         .ok()
                         .map(|(entries, _, _)| entries)
@@ -3546,12 +3560,13 @@ impl Blockstore {
     pub fn get_rooted_transaction(
         &self,
         signature: Signature,
+        migration_status: &MigrationStatus,
     ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
         self.rpc_api_metrics
             .num_get_rooted_transaction
             .fetch_add(1, Ordering::Relaxed);
 
-        self.get_transaction_with_status(signature, &HashSet::default())
+        self.get_transaction_with_status(signature, &HashSet::default(), migration_status)
     }
 
     /// Returns a complete transaction
@@ -3559,6 +3574,7 @@ impl Blockstore {
         &self,
         signature: Signature,
         highest_confirmed_slot: Slot,
+        migration_status: &MigrationStatus,
     ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
         self.rpc_api_metrics
             .num_get_complete_transaction
@@ -3569,19 +3585,20 @@ impl Blockstore {
             AncestorIterator::new_inclusive(highest_confirmed_slot, self)
                 .take_while(|&slot| slot > max_root)
                 .collect();
-        self.get_transaction_with_status(signature, &confirmed_unrooted_slots)
+        self.get_transaction_with_status(signature, &confirmed_unrooted_slots, migration_status)
     }
 
     fn get_transaction_with_status(
         &self,
         signature: Signature,
         confirmed_unrooted_slots: &HashSet<Slot>,
+        migration_status: &MigrationStatus,
     ) -> Result<Option<ConfirmedTransactionWithStatusMeta>> {
         if let Some((slot, meta)) =
             self.get_transaction_status(signature, confirmed_unrooted_slots)?
         {
             let transaction = self
-                .find_transaction_in_slot(slot, signature)?
+                .find_transaction_in_slot(slot, signature, migration_status)?
                 .ok_or(BlockstoreError::TransactionStatusSlotMismatch)?; // Should not happen
 
             let block_time = self.get_block_time(slot)?;
@@ -3601,8 +3618,9 @@ impl Blockstore {
         &self,
         slot: Slot,
         signature: Signature,
+        migration_status: &MigrationStatus,
     ) -> Result<Option<VersionedTransaction>> {
-        let slot_entries = self.get_slot_entries(slot, 0)?;
+        let slot_entries = self.get_slot_entries(slot, 0, migration_status)?;
         Ok(slot_entries
             .iter()
             .cloned()
@@ -3679,10 +3697,16 @@ impl Blockstore {
             .map(|signatures| signatures.iter().map(|(_, signature)| *signature).collect())
     }
 
-    fn get_block_signatures_rev(&self, slot: Slot) -> Result<Vec<Signature>> {
-        let block = self.get_complete_block(slot, false).map_err(|err| {
-            BlockstoreError::Io(IoError::other(format!("Unable to get block: {err}")))
-        })?;
+    fn get_block_signatures_rev(
+        &self,
+        slot: Slot,
+        migration_status: &MigrationStatus,
+    ) -> Result<Vec<Signature>> {
+        let block = self
+            .get_complete_block(slot, false, migration_status)
+            .map_err(|err| {
+                BlockstoreError::Io(IoError::other(format!("Unable to get block: {err}")))
+            })?;
 
         Ok(block
             .transactions
@@ -3705,6 +3729,7 @@ impl Blockstore {
         before: Option<Signature>,
         until: Option<Signature>,
         limit: usize,
+        migration_status: &MigrationStatus,
     ) -> Result<SignatureInfosForAddress> {
         self.rpc_api_metrics
             .num_get_confirmed_signatures_for_address2
@@ -3728,7 +3753,8 @@ impl Blockstore {
                 match transaction_status {
                     None => return Ok(SignatureInfosForAddress::default()),
                     Some((slot, _)) => {
-                        let mut slot_signatures = self.get_block_signatures_rev(slot)?;
+                        let mut slot_signatures =
+                            self.get_block_signatures_rev(slot, migration_status)?;
                         if let Some(pos) = slot_signatures.iter().position(|&x| x == before) {
                             slot_signatures.truncate(pos + 1);
                         }
@@ -3755,7 +3781,8 @@ impl Blockstore {
                 match transaction_status {
                     None => (first_available_block, HashSet::new()),
                     Some((slot, _)) => {
-                        let mut slot_signatures = self.get_block_signatures_rev(slot)?;
+                        let mut slot_signatures =
+                            self.get_block_signatures_rev(slot, migration_status)?;
                         if let Some(pos) = slot_signatures.iter().position(|&x| x == until) {
                             slot_signatures = slot_signatures.split_off(pos);
                         }
@@ -3923,8 +3950,13 @@ impl Blockstore {
     }
 
     /// Returns the entry vector for the slot starting with `shred_start_index`
-    pub fn get_slot_entries(&self, slot: Slot, shred_start_index: u64) -> Result<Vec<Entry>> {
-        self.get_slot_entries_with_shred_info(slot, shred_start_index, false)
+    pub fn get_slot_entries(
+        &self,
+        slot: Slot,
+        shred_start_index: u64,
+        migration_status: &MigrationStatus,
+    ) -> Result<Vec<Entry>> {
+        self.get_slot_entries_with_shred_info(slot, shred_start_index, false, migration_status)
             .map(|x| x.0)
     }
 
@@ -3935,6 +3967,7 @@ impl Blockstore {
         slot: Slot,
         start_index: u64,
         allow_dead_slots: bool,
+        migration_status: &MigrationStatus,
     ) -> Result<(Vec<Entry>, u64, bool)> {
         let (completed_ranges, slot_meta) = self.get_completed_ranges(slot, start_index)?;
 
@@ -3954,7 +3987,12 @@ impl Blockstore {
             .map(|&Range { end, .. }| u64::from(end) - start_index)
             .unwrap_or(0);
 
-        let entries = self.get_slot_entries_in_block(slot, completed_ranges, Some(&slot_meta))?;
+        let entries = self.get_slot_entries_in_block(
+            slot,
+            completed_ranges,
+            Some(&slot_meta),
+            migration_status,
+        )?;
         Ok((entries, num_shreds, slot_meta.is_full()))
     }
 
@@ -3966,6 +4004,7 @@ impl Blockstore {
         bank: &Bank,
         starting_slot: Slot,
         ending_slot: Slot,
+        migration_status: &MigrationStatus,
     ) -> (DashSet<Pubkey>, bool) {
         let result = DashSet::new();
         let lookup_tables = DashSet::new();
@@ -3980,7 +4019,7 @@ impl Blockstore {
         (starting_slot..=ending_slot)
             .into_par_iter()
             .for_each(|slot| {
-                if let Ok(entries) = self.get_slot_entries(slot, 0) {
+                if let Ok(entries) = self.get_slot_entries(slot, 0, migration_status) {
                     entries.into_par_iter().for_each(|entry| {
                         entry.transactions.into_iter().for_each(|tx| {
                             if let Some(lookups) = tx.message.address_table_lookups() {
@@ -4072,6 +4111,7 @@ impl Blockstore {
         slot: Slot,
         completed_ranges: CompletedRanges,
         slot_meta: Option<&SlotMeta>,
+        _migration_status: &solana_votor_messages::migration::MigrationStatus,
     ) -> Result<Vec<Entry>> {
         debug_assert!(completed_ranges
             .iter()
@@ -4143,8 +4183,9 @@ impl Blockstore {
         slot: Slot,
         range: Range<u32>,
         slot_meta: Option<&SlotMeta>,
+        migration_status: &MigrationStatus,
     ) -> Result<Vec<Entry>> {
-        self.get_slot_entries_in_block(slot, vec![range], slot_meta)
+        self.get_slot_entries_in_block(slot, vec![range], slot_meta, migration_status)
     }
 
     /// Performs checks on the last fec set of a replayed slot, and returns the block_id.
@@ -5842,7 +5883,9 @@ pub mod tests {
         let blockstore = Blockstore::open(ledger_path.path()).unwrap(); //FINDME
 
         let ticks = create_ticks(genesis_config.ticks_per_slot, 0, genesis_config.hash());
-        let entries = blockstore.get_slot_entries(0, 0).unwrap();
+        let entries = blockstore
+            .get_slot_entries(0, 0, &MigrationStatus::default())
+            .unwrap();
 
         assert_eq!(ticks, entries);
         assert!(Path::new(ledger_path.path())
@@ -5943,7 +5986,9 @@ pub mod tests {
 
             assert_eq!(
                 &ticks[(i * ticks_per_slot) as usize..((i + 1) * ticks_per_slot) as usize],
-                &blockstore.get_slot_entries(i, 0).unwrap()[..]
+                &blockstore
+                    .get_slot_entries(i, 0, &MigrationStatus::default())
+                    .unwrap()[..]
             );
         }
 
@@ -5971,7 +6016,7 @@ pub mod tests {
                     assert_eq!(
                         &ticks[0..1],
                         &blockstore
-                            .get_slot_entries(num_slots, ticks_per_slot - 2)
+                            .get_slot_entries(num_slots, ticks_per_slot - 2, &MigrationStatus::default())
                             .unwrap()[..]
                     );
 
@@ -5985,7 +6030,7 @@ pub mod tests {
 
                     assert_eq!(
                         &ticks[1..2],
-                        &blockstore.get_slot_entries(num_slots + 1, 0).unwrap()[..]
+                        &blockstore.get_slot_entries(num_slots + 1, 0, &MigrationStatus::default()).unwrap()[..]
                     );
         */
     }
@@ -6168,7 +6213,10 @@ pub mod tests {
         blockstore
             .insert_shreds(vec![last_shred], None, false)
             .unwrap();
-        assert!(blockstore.get_slot_entries(0, 0).unwrap().is_empty());
+        assert!(blockstore
+            .get_slot_entries(0, 0, &MigrationStatus::default())
+            .unwrap()
+            .is_empty());
 
         let meta = blockstore
             .meta(0)
@@ -6178,7 +6226,9 @@ pub mod tests {
 
         // Insert the other shreds, check for consecutive returned entries
         blockstore.insert_shreds(shreds, None, false).unwrap();
-        let result = blockstore.get_slot_entries(0, 0).unwrap();
+        let result = blockstore
+            .get_slot_entries(0, 0, &MigrationStatus::default())
+            .unwrap();
 
         assert_eq!(result, entries);
 
@@ -6212,7 +6262,9 @@ pub mod tests {
         for i in (0..num_shreds).rev() {
             let shred = shreds.pop().unwrap();
             blockstore.insert_shreds(vec![shred], None, false).unwrap();
-            let result = blockstore.get_slot_entries(0, 0).unwrap();
+            let result = blockstore
+                .get_slot_entries(0, 0, &MigrationStatus::default())
+                .unwrap();
 
             let meta = blockstore
                 .meta(0)
@@ -6277,7 +6329,9 @@ pub mod tests {
             .expect("Expected successful write of shreds");
 
         assert_eq!(
-            blockstore.get_slot_entries(1, 0).unwrap()[2..4],
+            blockstore
+                .get_slot_entries(1, 0, &MigrationStatus::default())
+                .unwrap()[2..4],
             entries[2..4],
         );
     }
@@ -6302,7 +6356,12 @@ pub mod tests {
             blockstore
                 .insert_shreds(shreds, None, false)
                 .expect("Expected successful write of shreds");
-            assert_eq!(blockstore.get_slot_entries(slot, 0).unwrap(), entries);
+            assert_eq!(
+                blockstore
+                    .get_slot_entries(slot, 0, &MigrationStatus::default())
+                    .unwrap(),
+                entries
+            );
         }
     }
 
@@ -6334,7 +6393,12 @@ pub mod tests {
 
             blockstore.insert_shreds(odd_shreds, None, false).unwrap();
 
-            assert_eq!(blockstore.get_slot_entries(slot, 0).unwrap(), vec![]);
+            assert_eq!(
+                blockstore
+                    .get_slot_entries(slot, 0, &MigrationStatus::default())
+                    .unwrap(),
+                vec![]
+            );
 
             let meta = blockstore.meta(slot).unwrap().unwrap();
             if num_shreds % 2 == 0 {
@@ -6353,7 +6417,9 @@ pub mod tests {
             blockstore.insert_shreds(even_shreds, None, false).unwrap();
 
             assert_eq!(
-                blockstore.get_slot_entries(slot, 0).unwrap(),
+                blockstore
+                    .get_slot_entries(slot, 0, &MigrationStatus::default())
+                    .unwrap(),
                 original_entries,
             );
 
@@ -7160,7 +7226,9 @@ pub mod tests {
 
         for i in 0..num_slots - 1 {
             assert_eq!(
-                blockstore.get_slot_entries(i, 0).unwrap()[0],
+                blockstore
+                    .get_slot_entries(i, 0, &MigrationStatus::default())
+                    .unwrap()[0],
                 entries[i as usize]
             );
 
@@ -8338,7 +8406,10 @@ pub mod tests {
             .insert_shreds(shreds, None, false)
             .expect("Expected successful write of shreds");
         assert_eq!(
-            blockstore.get_slot_entries(slot, 0).unwrap().len() as u64,
+            blockstore
+                .get_slot_entries(slot, 0, &MigrationStatus::default())
+                .unwrap()
+                .len() as u64,
             num_ticks
         );
 
@@ -8368,7 +8439,9 @@ pub mod tests {
         blockstore
             .insert_shreds(shreds, None, false)
             .expect("Expected successful write of shreds");
-        assert!(blockstore.get_slot_entries(slot, 0).is_err());
+        assert!(blockstore
+            .get_slot_entries(slot, 0, &MigrationStatus::default())
+            .is_err());
     }
 
     #[test]
@@ -8448,7 +8521,12 @@ pub mod tests {
         assert_eq!(blockstore.lowest_slot_with_genesis(), 0);
         assert_eq!(blockstore.lowest_slot(), 1);
 
-        blockstore.purge_slots(0, 1, PurgeType::CompactionFilter);
+        blockstore.purge_slots(
+            0,
+            1,
+            PurgeType::CompactionFilter,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
         assert_eq!(blockstore.get_first_available_block().unwrap(), 3);
         assert_eq!(blockstore.lowest_slot_with_genesis(), 2);
         assert_eq!(blockstore.lowest_slot(), 2);
@@ -8592,19 +8670,21 @@ pub mod tests {
 
         // Even if marked as root, a slot that is empty of entries should return an error
         assert_matches!(
-            blockstore.get_rooted_block(slot - 1, true),
+            blockstore.get_rooted_block(slot - 1, true, &MigrationStatus::default()),
             Err(BlockstoreError::SlotUnavailable)
         );
 
         // The previous_blockhash of `expected_block` is default because its parent slot is a root,
         // but empty of entries (eg. snapshot root slots). This now returns an error.
         assert_matches!(
-            blockstore.get_rooted_block(slot, true),
+            blockstore.get_rooted_block(slot, true, &MigrationStatus::default()),
             Err(BlockstoreError::ParentEntriesUnavailable)
         );
 
         // Test if require_previous_blockhash is false
-        let confirmed_block = blockstore.get_rooted_block(slot, false).unwrap();
+        let confirmed_block = blockstore
+            .get_rooted_block(slot, false, &MigrationStatus::default())
+            .unwrap();
         assert_eq!(confirmed_block.transactions.len(), 100);
         let expected_block = VersionedConfirmedBlock {
             transactions: expected_transactions.clone(),
@@ -8618,7 +8698,13 @@ pub mod tests {
         };
         assert_eq!(confirmed_block, expected_block);
 
-        let confirmed_block = blockstore.get_rooted_block(slot + 1, true).unwrap();
+        let confirmed_block = blockstore
+            .get_rooted_block(
+                slot + 1,
+                true,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            )
+            .unwrap();
         assert_eq!(confirmed_block.transactions.len(), 100);
 
         let mut expected_block = VersionedConfirmedBlock {
@@ -8633,10 +8719,22 @@ pub mod tests {
         };
         assert_eq!(confirmed_block, expected_block);
 
-        let not_root = blockstore.get_rooted_block(slot + 2, true).unwrap_err();
+        let not_root = blockstore
+            .get_rooted_block(
+                slot + 2,
+                true,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            )
+            .unwrap_err();
         assert_matches!(not_root, BlockstoreError::SlotNotRooted);
 
-        let complete_block = blockstore.get_complete_block(slot + 2, true).unwrap();
+        let complete_block = blockstore
+            .get_complete_block(
+                slot + 2,
+                true,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            )
+            .unwrap();
         assert_eq!(complete_block.transactions.len(), 100);
 
         let mut expected_complete_block = VersionedConfirmedBlock {
@@ -8662,7 +8760,13 @@ pub mod tests {
             .unwrap();
         expected_block.block_height = Some(block_height);
 
-        let confirmed_block = blockstore.get_rooted_block(slot + 1, true).unwrap();
+        let confirmed_block = blockstore
+            .get_rooted_block(
+                slot + 1,
+                true,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            )
+            .unwrap();
         assert_eq!(confirmed_block, expected_block);
 
         let timestamp = 1_576_183_542;
@@ -8675,7 +8779,13 @@ pub mod tests {
             .unwrap();
         expected_complete_block.block_height = Some(block_height);
 
-        let complete_block = blockstore.get_complete_block(slot + 2, true).unwrap();
+        let complete_block = blockstore
+            .get_complete_block(
+                slot + 2,
+                true,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            )
+            .unwrap();
         assert_eq!(complete_block, expected_complete_block);
     }
 
@@ -9321,7 +9431,12 @@ pub mod tests {
 
         if simulate_blockstore_cleanup_service {
             *blockstore.lowest_cleanup_slot.write().unwrap() = lowest_cleanup_slot;
-            blockstore.purge_slots(0, lowest_cleanup_slot, PurgeType::CompactionFilter);
+            blockstore.purge_slots(
+                0,
+                lowest_cleanup_slot,
+                PurgeType::CompactionFilter,
+                &solana_votor_messages::migration::MigrationStatus::default(),
+            );
         }
 
         let are_missing = check_for_missing();
@@ -9434,7 +9549,12 @@ pub mod tests {
         for tx_with_meta in expected_transactions.clone() {
             let signature = tx_with_meta.transaction.signatures[0];
             assert_eq!(
-                blockstore.get_rooted_transaction(signature).unwrap(),
+                blockstore
+                    .get_rooted_transaction(
+                        signature,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
+                    .unwrap(),
                 Some(ConfirmedTransactionWithStatusMeta {
                     slot,
                     tx_with_meta: TransactionWithStatusMeta::Complete(tx_with_meta.clone()),
@@ -9443,7 +9563,11 @@ pub mod tests {
             );
             assert_eq!(
                 blockstore
-                    .get_complete_transaction(signature, slot + 1)
+                    .get_complete_transaction(
+                        signature,
+                        slot + 1,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
                     .unwrap(),
                 Some(ConfirmedTransactionWithStatusMeta {
                     slot,
@@ -9459,10 +9583,22 @@ pub mod tests {
         *blockstore.lowest_cleanup_slot.write().unwrap() = slot;
         for VersionedTransactionWithStatusMeta { transaction, .. } in expected_transactions {
             let signature = transaction.signatures[0];
-            assert_eq!(blockstore.get_rooted_transaction(signature).unwrap(), None);
             assert_eq!(
                 blockstore
-                    .get_complete_transaction(signature, slot + 1)
+                    .get_rooted_transaction(
+                        signature,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                blockstore
+                    .get_complete_transaction(
+                        signature,
+                        slot + 1,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
                     .unwrap(),
                 None,
             );
@@ -9558,7 +9694,11 @@ pub mod tests {
             let signature = tx_with_meta.transaction.signatures[0];
             assert_eq!(
                 blockstore
-                    .get_complete_transaction(signature, slot)
+                    .get_complete_transaction(
+                        signature,
+                        slot,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
                     .unwrap(),
                 Some(ConfirmedTransactionWithStatusMeta {
                     slot,
@@ -9566,7 +9706,15 @@ pub mod tests {
                     block_time: None
                 })
             );
-            assert_eq!(blockstore.get_rooted_transaction(signature).unwrap(), None);
+            assert_eq!(
+                blockstore
+                    .get_rooted_transaction(
+                        signature,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
+                    .unwrap(),
+                None
+            );
         }
 
         blockstore
@@ -9577,11 +9725,23 @@ pub mod tests {
             let signature = transaction.signatures[0];
             assert_eq!(
                 blockstore
-                    .get_complete_transaction(signature, slot)
+                    .get_complete_transaction(
+                        signature,
+                        slot,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
                     .unwrap(),
                 None,
             );
-            assert_eq!(blockstore.get_rooted_transaction(signature).unwrap(), None,);
+            assert_eq!(
+                blockstore
+                    .get_rooted_transaction(
+                        signature,
+                        &solana_votor_messages::migration::MigrationStatus::default()
+                    )
+                    .unwrap(),
+                None,
+            );
         }
     }
 
@@ -9593,7 +9753,10 @@ pub mod tests {
         blockstore.set_roots(std::iter::once(&0)).unwrap();
         assert_eq!(
             blockstore
-                .get_rooted_transaction(Signature::default())
+                .get_rooted_transaction(
+                    Signature::default(),
+                    &solana_votor_messages::migration::MigrationStatus::default()
+                )
                 .unwrap(),
             None
         );
@@ -9825,6 +9988,7 @@ pub mod tests {
                 None,
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap();
         assert!(sig_infos.found_before);
@@ -9839,6 +10003,7 @@ pub mod tests {
                 None,
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -9857,6 +10022,7 @@ pub mod tests {
                     },
                     None,
                     1,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap();
             assert!(sig_infos.found_before);
@@ -9881,6 +10047,7 @@ pub mod tests {
                         Some(all0[i + 1].signature)
                     },
                     10,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -9895,6 +10062,7 @@ pub mod tests {
                 Some(all0[all0.len() - 1].signature),
                 None,
                 1,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap();
         assert!(sig_infos.found_before);
@@ -9907,6 +10075,7 @@ pub mod tests {
                 None,
                 Some(all0[0].signature),
                 2,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos
@@ -9926,6 +10095,7 @@ pub mod tests {
                     },
                     None,
                     3,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -9948,6 +10118,7 @@ pub mod tests {
                     },
                     None,
                     2,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -9965,6 +10136,7 @@ pub mod tests {
                 Some(all1[0].signature),
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap();
         assert!(sig_infos.found_before);
@@ -9980,6 +10152,7 @@ pub mod tests {
                 Some(all1[0].signature),
                 Some(all1[4].signature),
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -9996,6 +10169,7 @@ pub mod tests {
                 None,
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -10009,6 +10183,7 @@ pub mod tests {
                 None,
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -10027,6 +10202,7 @@ pub mod tests {
                     },
                     None,
                     1,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -10050,6 +10226,7 @@ pub mod tests {
                         Some(all0[i + 1].signature)
                     },
                     10,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -10064,6 +10241,7 @@ pub mod tests {
                 Some(all0[all0.len() - 1].signature),
                 None,
                 1,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos
@@ -10076,6 +10254,7 @@ pub mod tests {
                 None,
                 Some(all0[0].signature),
                 2,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos
@@ -10095,6 +10274,7 @@ pub mod tests {
                     },
                     None,
                     3,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -10121,6 +10301,7 @@ pub mod tests {
                     },
                     None,
                     2,
+                    &solana_votor_messages::migration::MigrationStatus::default(),
                 )
                 .unwrap()
                 .infos;
@@ -10138,6 +10319,7 @@ pub mod tests {
                 Some(all1[0].signature),
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -10152,6 +10334,7 @@ pub mod tests {
                 Some(all1[0].signature),
                 Some(all1[4].signature),
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap()
             .infos;
@@ -10169,6 +10352,7 @@ pub mod tests {
                 Some(all0[0].signature),
                 None,
                 usize::MAX,
+                &solana_votor_messages::migration::MigrationStatus::default(),
             )
             .unwrap();
         assert!(!sig_infos.found_before);
@@ -10501,14 +10685,22 @@ pub mod tests {
             .insert_shreds(all_shreds, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test inserting just the codes, enough for recovery
         blockstore
             .insert_shreds(coding_shreds.clone(), Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test inserting some codes, but not enough for recovery
         blockstore
@@ -10519,7 +10711,11 @@ pub mod tests {
             )
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test inserting just the codes, and some data, enough for recovery
         let shreds: Vec<_> = data_shreds[..data_shreds.len() - 1]
@@ -10531,7 +10727,11 @@ pub mod tests {
             .insert_shreds(shreds, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test inserting some codes, and some data, but enough for recovery
         let shreds: Vec<_> = data_shreds[..data_shreds.len() / 2 - 1]
@@ -10543,7 +10743,11 @@ pub mod tests {
             .insert_shreds(shreds, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test inserting all shreds in 2 rounds, make sure nothing is lost
         let shreds1: Vec<_> = data_shreds[..data_shreds.len() / 2 - 1]
@@ -10563,7 +10767,11 @@ pub mod tests {
             .insert_shreds(shreds2, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test not all, but enough data and coding shreds in 2 rounds to trigger recovery,
         // make sure nothing is lost
@@ -10588,7 +10796,11 @@ pub mod tests {
             .insert_shreds(shreds2, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
 
         // Test insert shreds in 2 rounds, but not enough to trigger
         // recovery, make sure nothing is lost
@@ -10613,7 +10825,11 @@ pub mod tests {
             .insert_shreds(shreds2, Some(&leader_schedule_cache), false)
             .unwrap();
         verify_index_integrity(&blockstore, slot);
-        blockstore.purge_and_compact_slots(0, slot);
+        blockstore.purge_and_compact_slots(
+            0,
+            slot,
+            &solana_votor_messages::migration::MigrationStatus::default(),
+        );
     }
 
     fn setup_erasure_shreds(
@@ -11167,7 +11383,12 @@ pub mod tests {
                 .unwrap();
             let meta = blockstore.meta(0).unwrap().unwrap();
             assert!(!blockstore.is_dead(0));
-            assert_eq!(blockstore.get_slot_entries(0, 0).unwrap(), vec![]);
+            assert_eq!(
+                blockstore
+                    .get_slot_entries(0, 0, &MigrationStatus::default())
+                    .unwrap(),
+                vec![]
+            );
             assert_eq!(meta.consumed, 0);
             assert_eq!(meta.received, last_index + 1);
             assert_eq!(meta.parent_slot, Some(0));
@@ -11180,7 +11401,12 @@ pub mod tests {
             .insert_shreds(duplicate_shreds, None, false)
             .unwrap();
 
-        assert_eq!(blockstore.get_slot_entries(0, 0).unwrap(), original_entries);
+        assert_eq!(
+            blockstore
+                .get_slot_entries(0, 0, &MigrationStatus::default())
+                .unwrap(),
+            original_entries
+        );
 
         let meta = blockstore.meta(0).unwrap().unwrap();
         assert_eq!(meta.consumed, num_shreds);
@@ -11396,7 +11622,12 @@ pub mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     while let Ok(slot) = slot_receiver.recv() {
-                        match blockstore.get_slot_entries_with_shred_info(slot, 0, false) {
+                        match blockstore.get_slot_entries_with_shred_info(
+                            slot,
+                            0,
+                            false,
+                            &MigrationStatus::default(),
+                        ) {
                             Ok((_entries, _num_shreds, is_full)) => {
                                 if is_full {
                                     signal_sender

@@ -42,7 +42,7 @@ use {
     solana_validator_exit::Exit,
     solana_vote::vote_transaction::{self, VoteTransaction},
     solana_vote_program::vote_state::TowerSync,
-    solana_votor_messages::consensus_message::ConsensusMessage,
+    solana_votor_messages::{consensus_message::ConsensusMessage, migration::MigrationStatus},
     std::{
         collections::{HashMap, HashSet, VecDeque},
         net::{SocketAddr, TcpListener, UdpSocket},
@@ -181,11 +181,15 @@ pub fn send_many_transactions(
     expected_balances
 }
 
-pub fn verify_ledger_ticks(ledger_path: &Path, ticks_per_slot: usize) {
+pub fn verify_ledger_ticks(
+    ledger_path: &Path,
+    ticks_per_slot: usize,
+    migration_status: &MigrationStatus,
+) {
     let ledger = Blockstore::open(ledger_path).unwrap();
     let thread_pool = entry::thread_pool_for_tests();
 
-    let zeroth_slot = ledger.get_slot_entries(0, 0).unwrap();
+    let zeroth_slot = ledger.get_slot_entries(0, 0, migration_status).unwrap();
     let last_id = zeroth_slot.last().unwrap().hash;
     let next_slots = ledger.get_slots_since(&[0]).unwrap().remove(&0).unwrap();
     let mut pending_slots: Vec<_> = next_slots
@@ -206,7 +210,14 @@ pub fn verify_ledger_ticks(ledger_path: &Path, ticks_per_slot: usize) {
             None
         };
 
-        let last_id = verify_slot_ticks(&ledger, &thread_pool, slot, &last_id, should_verify_ticks);
+        let last_id = verify_slot_ticks(
+            &ledger,
+            &thread_pool,
+            slot,
+            &last_id,
+            should_verify_ticks,
+            migration_status,
+        );
         pending_slots.extend(
             next_slots
                 .into_iter()
@@ -807,8 +818,11 @@ fn get_and_verify_slot_entries(
     thread_pool: &ThreadPool,
     slot: Slot,
     last_entry: &Hash,
+    migration_status: &MigrationStatus,
 ) -> Vec<Entry> {
-    let entries = blockstore.get_slot_entries(slot, 0).unwrap();
+    let entries = blockstore
+        .get_slot_entries(slot, 0, migration_status)
+        .unwrap();
     assert!(entries.verify(last_entry, thread_pool));
     entries
 }
@@ -819,8 +833,10 @@ fn verify_slot_ticks(
     slot: Slot,
     last_entry: &Hash,
     expected_num_ticks: Option<usize>,
+    migration_status: &MigrationStatus,
 ) -> Hash {
-    let entries = get_and_verify_slot_entries(blockstore, thread_pool, slot, last_entry);
+    let entries =
+        get_and_verify_slot_entries(blockstore, thread_pool, slot, last_entry, migration_status);
     let num_ticks: usize = entries.iter().map(|entry| entry.is_tick() as usize).sum();
     if let Some(expected_num_ticks) = expected_num_ticks {
         assert_eq!(num_ticks, expected_num_ticks);

@@ -93,6 +93,7 @@ use {
     },
     solana_validator_exit::Exit,
     solana_vote_program::vote_state::MAX_LOCKOUT_HISTORY,
+    solana_votor_messages::migration::MigrationStatus,
     spl_generic_token::{
         token::{SPL_TOKEN_ACCOUNT_MINT_OFFSET, SPL_TOKEN_ACCOUNT_OWNER_OFFSET},
         token_2022::{self, ACCOUNTTYPE_ACCOUNT},
@@ -258,6 +259,7 @@ pub struct JsonRpcRequestProcessor {
     prioritization_fee_cache: Arc<PrioritizationFeeCache>,
     runtime: Arc<Runtime>,
     alpenglow_last_voted: Option<Arc<AlpenglowLastVoted>>,
+    migration_status: Arc<MigrationStatus>,
 }
 impl Metadata for JsonRpcRequestProcessor {}
 
@@ -422,6 +424,7 @@ impl JsonRpcRequestProcessor {
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         runtime: Arc<Runtime>,
         alpenglow_last_voted: Option<Arc<AlpenglowLastVoted>>,
+        migration_status: Arc<MigrationStatus>,
     ) -> (Self, Receiver<TransactionInfo>) {
         let (transaction_sender, transaction_receiver) = unbounded();
         (
@@ -445,6 +448,7 @@ impl JsonRpcRequestProcessor {
                 prioritization_fee_cache,
                 runtime,
                 alpenglow_last_voted,
+                migration_status,
             },
             transaction_receiver,
         )
@@ -531,6 +535,7 @@ impl JsonRpcRequestProcessor {
             prioritization_fee_cache: Arc::new(PrioritizationFeeCache::default()),
             runtime,
             alpenglow_last_voted: None,
+            migration_status: Arc::new(MigrationStatus::default()),
         }
     }
 
@@ -1328,7 +1333,8 @@ impl JsonRpcRequestProcessor {
                 .runtime
                 .spawn_blocking({
                     let blockstore = Arc::clone(&self.blockstore);
-                    move || blockstore.get_rooted_block(slot, true)
+                    let migration_status = Arc::clone(&self.migration_status);
+                    move || blockstore.get_rooted_block(slot, true, &migration_status)
                 })
                 .await
                 .expect("Failed to spawn blocking task");
@@ -1374,7 +1380,8 @@ impl JsonRpcRequestProcessor {
                     .runtime
                     .spawn_blocking({
                         let blockstore = Arc::clone(&self.blockstore);
-                        move || blockstore.get_complete_block(slot, true)
+                        let migration_status = Arc::clone(&self.migration_status);
+                        move || blockstore.get_complete_block(slot, true, &migration_status)
                     })
                     .await
                     .expect("Failed to spawn blocking task");
@@ -1769,12 +1776,17 @@ impl JsonRpcRequestProcessor {
             .spawn_blocking({
                 let blockstore = Arc::clone(&self.blockstore);
                 let confirmed_bank = Arc::clone(&confirmed_bank);
+                let migration_status = Arc::clone(&self.migration_status);
                 move || {
                     if commitment.is_confirmed() {
                         let highest_confirmed_slot = confirmed_bank.slot();
-                        blockstore.get_complete_transaction(signature, highest_confirmed_slot)
+                        blockstore.get_complete_transaction(
+                            signature,
+                            highest_confirmed_slot,
+                            &migration_status,
+                        )
                     } else {
-                        blockstore.get_rooted_transaction(signature)
+                        blockstore.get_rooted_transaction(signature, &migration_status)
                     }
                 }
             })
@@ -1864,7 +1876,14 @@ impl JsonRpcRequestProcessor {
             found_before,
         } = self
             .blockstore
-            .get_confirmed_signatures_for_address2(address, highest_slot, before, until, limit)
+            .get_confirmed_signatures_for_address2(
+                address,
+                highest_slot,
+                before,
+                until,
+                limit,
+                &self.migration_status,
+            )
             .map_err(|err| Error::invalid_params(format!("{err}")))?;
 
         let map_results = |results: Vec<ConfirmedTransactionStatusWithSignature>| {
@@ -4831,6 +4850,7 @@ pub mod tests {
                 Arc::new(PrioritizationFeeCache::default()),
                 service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj),
                 None,
+                Arc::new(MigrationStatus::default()),
             )
             .0;
 
@@ -6872,6 +6892,7 @@ pub mod tests {
             Arc::new(PrioritizationFeeCache::default()),
             runtime.clone(),
             None,
+            Arc::new(MigrationStatus::default()),
         );
 
         let client = Client::create_client(Some(runtime.handle().clone()), my_tpu_address, None, 1);
@@ -7176,6 +7197,7 @@ pub mod tests {
             Arc::new(PrioritizationFeeCache::default()),
             runtime,
             None,
+            Arc::new(MigrationStatus::default()),
         );
 
         SendTransactionService::new_with_client(
@@ -8879,6 +8901,7 @@ pub mod tests {
             Arc::new(PrioritizationFeeCache::default()),
             service_runtime(rpc_threads, rpc_blocking_threads, rpc_niceness_adj),
             None,
+            Arc::new(MigrationStatus::default()),
         );
 
         let mut io = MetaIoHandler::default();

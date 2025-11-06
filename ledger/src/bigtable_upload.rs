@@ -4,6 +4,7 @@ use {
     log::*,
     solana_clock::Slot,
     solana_measure::measure::Measure,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         cmp::{max, min},
         collections::HashSet,
@@ -174,7 +175,11 @@ pub async fn upload_confirmed_blocks(
                                     break;
                                 }
 
-                                let _ = match blockstore.get_rooted_block_with_entries(slot, true) {
+                                let _ = match blockstore.get_rooted_block_with_entries(
+                                    slot,
+                                    true,
+                                    &MigrationStatus::default(),
+                                ) {
                                     Ok(confirmed_block_with_entries) => {
                                         num_blocks_read += 1;
                                         sender.send((slot, Some(confirmed_block_with_entries)))

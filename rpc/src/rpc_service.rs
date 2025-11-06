@@ -50,6 +50,7 @@ use {
     },
     solana_storage_bigtable::CredentialType,
     solana_validator_exit::Exit,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         net::SocketAddr,
         path::{Path, PathBuf},
@@ -493,6 +494,7 @@ pub struct JsonRpcServiceConfig<'a> {
     pub prioritization_fee_cache: Arc<PrioritizationFeeCache>,
     pub client_option: ClientOption<'a>,
     pub alpenglow_last_voted: Option<Arc<AlpenglowLastVoted>>,
+    pub migration_status: Arc<MigrationStatus>,
 }
 
 impl JsonRpcService {
@@ -545,6 +547,7 @@ impl JsonRpcService {
                     config.prioritization_fee_cache,
                     runtime,
                     config.alpenglow_last_voted,
+                    config.migration_status,
                 )?;
                 Ok(json_rpc_service)
             }
@@ -595,6 +598,7 @@ impl JsonRpcService {
                     config.prioritization_fee_cache,
                     runtime,
                     config.alpenglow_last_voted,
+                    config.migration_status,
                 )?;
                 Ok(json_rpc_service)
             }
@@ -623,6 +627,7 @@ impl JsonRpcService {
         connection_cache: Arc<ConnectionCache>,
         max_complete_transaction_status_slot: Arc<AtomicU64>,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
+        migration_status: Arc<MigrationStatus>,
     ) -> Result<Self, String> {
         let runtime = service_runtime(
             config.rpc_threads,
@@ -671,6 +676,7 @@ impl JsonRpcService {
             prioritization_fee_cache,
             runtime,
             None,
+            migration_status,
         )?;
         Ok(json_rpc_service)
     }
@@ -705,6 +711,7 @@ impl JsonRpcService {
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         runtime: Arc<TokioRuntime>,
         alpenglow_last_voted: Option<Arc<AlpenglowLastVoted>>,
+        migration_status: Arc<MigrationStatus>,
     ) -> Result<Self, String> {
         info!("rpc bound to {rpc_addr:?}");
         info!("rpc configuration: {config:?}");
@@ -797,6 +804,7 @@ impl JsonRpcService {
             prioritization_fee_cache,
             Arc::clone(&runtime),
             alpenglow_last_voted,
+            migration_status,
         );
 
         let _send_transaction_service = Arc::new(SendTransactionService::new_with_client(
@@ -1011,6 +1019,7 @@ mod tests {
             connection_cache,
             Arc::new(AtomicU64::default()),
             Arc::new(PrioritizationFeeCache::default()),
+            Arc::new(MigrationStatus::default()),
         )
         .expect("assume successful JsonRpcService start");
         let thread = rpc_service.thread_hdl.thread();

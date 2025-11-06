@@ -95,6 +95,7 @@ solana-validator-exit = { workspace = true }
 solana-version = { workspace = true }
 solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
+solana-votor-messages = { workspace = true }
 spl-generic-token = { workspace = true }
 spl-token-2022-interface = { workspace = true }
 spl-token-interface = { workspace = true }

@@ -38,10 +38,21 @@ impl Blockstore {
     /// while the non-slot-id based column families, `cf::TransactionStatus`,
     /// `AddressSignature`, and `cf::TransactionStatusIndex`, are cleaned-up
     /// based on the `purge_type` setting.
-    pub fn purge_slots(&self, from_slot: Slot, to_slot: Slot, purge_type: PurgeType) {
+    pub fn purge_slots(
+        &self,
+        from_slot: Slot,
+        to_slot: Slot,
+        purge_type: PurgeType,
+        migration_status: &MigrationStatus,
+    ) {
         let mut purge_stats = PurgeStats::default();
-        let purge_result =
-            self.run_purge_with_stats(from_slot, to_slot, purge_type, &mut purge_stats);
+        let purge_result = self.run_purge_with_stats(
+            from_slot,
+            to_slot,
+            purge_type,
+            &mut purge_stats,
+            migration_status,
+        );
 
         datapoint_info!(
             "blockstore-purge",
@@ -77,8 +88,13 @@ impl Blockstore {
         }
     }
 
-    pub fn purge_and_compact_slots(&self, from_slot: Slot, to_slot: Slot) {
-        self.purge_slots(from_slot, to_slot, PurgeType::Exact);
+    pub fn purge_and_compact_slots(
+        &self,
+        from_slot: Slot,
+        to_slot: Slot,
+        migration_status: &MigrationStatus,
+    ) {
+        self.purge_slots(from_slot, to_slot, PurgeType::Exact, migration_status);
     }
 
     /// Ensures that the SlotMeta::next_slots vector for all slots contain no references in the
@@ -133,7 +149,13 @@ impl Blockstore {
         to_slot: Slot,
         purge_type: PurgeType,
     ) -> Result<bool> {
-        self.run_purge_with_stats(from_slot, to_slot, purge_type, &mut PurgeStats::default())
+        self.run_purge_with_stats(
+            from_slot,
+            to_slot,
+            purge_type,
+            &mut PurgeStats::default(),
+            &MigrationStatus::default(),
+        )
     }
 
     /// Purges all columns relating to `slot`.
@@ -142,13 +164,23 @@ impl Blockstore {
     /// the parent's `next_slots`. We reinsert an orphaned `slot_meta` for `slot`
     /// that preserves `slot`'s `next_slots`. This ensures that `slot`'s fork is
     /// replayable upon repair of `slot`.
-    pub(crate) fn purge_slot_cleanup_chaining(&self, slot: Slot) -> Result<bool> {
+    pub(crate) fn purge_slot_cleanup_chaining(
+        &self,
+        slot: Slot,
+        migration_status: &MigrationStatus,
+    ) -> Result<bool> {
         let Some(mut slot_meta) = self.meta(slot)? else {
             return Err(BlockstoreError::SlotUnavailable);
         };
         let mut write_batch = self.get_write_batch()?;
 
-        let columns_purged = self.purge_range(&mut write_batch, slot, slot, PurgeType::Exact)?;
+        let columns_purged = self.purge_range(
+            &mut write_batch,
+            slot,
+            slot,
+            PurgeType::Exact,
+            migration_status,
+        )?;
 
         if let Some(parent_slot) = slot_meta.parent_slot {
             let parent_slot_meta = self.meta(parent_slot)?;
@@ -194,11 +226,18 @@ impl Blockstore {
         to_slot: Slot,
         purge_type: PurgeType,
         purge_stats: &mut PurgeStats,
+        migration_status: &MigrationStatus,
     ) -> Result<bool> {
         let mut write_batch = self.get_write_batch()?;
 
         let mut delete_range_timer = Measure::start("delete_range");
-        let columns_purged = self.purge_range(&mut write_batch, from_slot, to_slot, purge_type)?;
+        let columns_purged = self.purge_range(
+            &mut write_batch,
+            from_slot,
+            to_slot,
+            purge_type,
+            migration_status,
+        )?;
         delete_range_timer.stop();
 
         let mut write_timer = Measure::start("write_batch");
@@ -240,6 +279,7 @@ impl Blockstore {
         from_slot: Slot,
         to_slot: Slot,
         purge_type: PurgeType,
+        migration_status: &MigrationStatus,
     ) -> Result<bool> {
         let columns_purged = self
             .meta_cf
@@ -332,7 +372,12 @@ impl Blockstore {
 
         match purge_type {
             PurgeType::Exact => {
-                self.purge_special_columns_exact(write_batch, from_slot, to_slot)?;
+                self.purge_special_columns_exact(
+                    write_batch,
+                    from_slot,
+                    to_slot,
+                    migration_status,
+                )?;
             }
             PurgeType::CompactionFilter => {
                 // No explicit action is required here because this purge type completely and
@@ -467,6 +512,7 @@ impl Blockstore {
         batch: &mut WriteBatch,
         from_slot: Slot,
         to_slot: Slot,
+        migration_status: &MigrationStatus,
     ) -> Result<()> {
         if self.special_columns_empty()? {
             return Ok(());
@@ -492,8 +538,12 @@ impl Blockstore {
         for slot in from_slot..=to_slot {
             let primary_indexes = slot_indexes(slot);
 
-            let (slot_entries, _, _) =
-                self.get_slot_entries_with_shred_info(slot, 0, true /* allow_dead_slots */)?;
+            let (slot_entries, _, _) = self.get_slot_entries_with_shred_info(
+                slot,
+                0,
+                true, /* allow_dead_slots */
+                migration_status,
+            )?;
             let transactions = slot_entries
                 .into_iter()
                 .flat_map(|entry| entry.transactions);
@@ -580,11 +630,11 @@ pub mod tests {
         let (shreds, _) = make_many_slot_entries(0, 50, 5);
         blockstore.insert_shreds(shreds, None, false).unwrap();
 
-        blockstore.purge_and_compact_slots(0, 5);
+        blockstore.purge_and_compact_slots(0, 5, &MigrationStatus::default());
 
         test_all_empty_or_min(&blockstore, 6);
 
-        blockstore.purge_and_compact_slots(0, 50);
+        blockstore.purge_and_compact_slots(0, 50, &MigrationStatus::default());
 
         // min slot shouldn't matter, blockstore should be empty
         test_all_empty_or_min(&blockstore, 100);
@@ -991,7 +1041,12 @@ pub mod tests {
 
         let mut write_batch = blockstore.get_write_batch().unwrap();
         blockstore
-            .purge_special_columns_exact(&mut write_batch, slot, slot + 1)
+            .purge_special_columns_exact(
+                &mut write_batch,
+                slot,
+                slot + 1,
+                &MigrationStatus::default(),
+            )
             .unwrap();
     }
 
@@ -1126,7 +1181,9 @@ pub mod tests {
         blockstore.insert_shreds(shreds, None, false).unwrap();
 
         assert!(matches!(
-            blockstore.purge_slot_cleanup_chaining(11).unwrap_err(),
+            blockstore
+                .purge_slot_cleanup_chaining(11, &MigrationStatus::default())
+                .unwrap_err(),
             BlockstoreError::SlotUnavailable
         ));
     }
@@ -1143,7 +1200,9 @@ pub mod tests {
         let (slot_12, _) = make_slot_entries(12, 5, 5);
         blockstore.insert_shreds(slot_12, None, false).unwrap();
 
-        blockstore.purge_slot_cleanup_chaining(5).unwrap();
+        blockstore
+            .purge_slot_cleanup_chaining(5, &MigrationStatus::default())
+            .unwrap();
 
         let slot_meta = blockstore.meta(5).unwrap().unwrap();
         let expected_slot_meta = SlotMeta {

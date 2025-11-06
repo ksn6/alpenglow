@@ -60,6 +60,7 @@ use {
     solana_transaction_error::{TransactionError, TransactionResult as Result},
     solana_transaction_status::token_balances::TransactionTokenBalancesSet,
     solana_vote::vote_account::VoteAccountsHashMap,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
@@ -1169,6 +1170,7 @@ fn confirm_full_slot(
         opts.allow_dead_slots,
         opts.runtime_config.log_messages_bytes_limit,
         &ignored_prioritization_fee_cache,
+        &MigrationStatus::default(),
     )?;
 
     timing.accumulate(&confirmation_timing.batch_execute.totals);
@@ -1508,13 +1510,19 @@ pub fn confirm_slot(
     allow_dead_slots: bool,
     log_messages_bytes_limit: Option<usize>,
     prioritization_fee_cache: &PrioritizationFeeCache,
+    migration_status: &MigrationStatus,
 ) -> result::Result<(), BlockstoreProcessorError> {
     let slot = bank.slot();
 
     let slot_entries_load_result = {
         let mut load_elapsed = Measure::start("load_elapsed");
         let load_result = blockstore
-            .get_slot_entries_with_shred_info(slot, progress.num_shreds, allow_dead_slots)
+            .get_slot_entries_with_shred_info(
+                slot,
+                progress.num_shreds,
+                allow_dead_slots,
+                migration_status,
+            )
             .map_err(BlockstoreProcessorError::FailedToLoadEntries);
         load_elapsed.stop();
         if load_result.is_err() {

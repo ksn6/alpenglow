@@ -36,6 +36,7 @@ use {
     solana_transaction_status::{
         BlockEncodingOptions, ConfirmedBlock, TransactionDetails, UiTransactionEncoding,
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         collections::HashSet,
         net::{IpAddr, SocketAddr},
@@ -291,7 +292,9 @@ fn test_block_subscription() {
     let maybe_actual = receiver.recv_timeout(Duration::from_millis(400));
     match maybe_actual {
         Ok(actual) => {
-            let versioned_block = blockstore.get_complete_block(slot, false).unwrap();
+            let versioned_block = blockstore
+                .get_complete_block(slot, false, &MigrationStatus::default())
+                .unwrap();
             let confirmed_block = ConfirmedBlock::from(versioned_block);
             let block = confirmed_block
                 .encode_with_options(

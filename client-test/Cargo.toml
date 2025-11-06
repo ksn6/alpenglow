@@ -40,6 +40,7 @@ solana-system-transaction = { workspace = true }
 solana-test-validator = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana-version = { workspace = true }
+solana-votor-messages = { workspace = true }
 systemstat = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }

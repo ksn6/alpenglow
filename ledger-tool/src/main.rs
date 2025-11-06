@@ -82,6 +82,7 @@ use {
         self,
         vote_state::{self, VoteStateV3},
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         collections::{HashMap, HashSet},
         ffi::{OsStr, OsString},
@@ -443,9 +444,10 @@ fn compute_slot_cost(
     blockstore: &Blockstore,
     slot: Slot,
     allow_dead_slots: bool,
+    migration_status: &MigrationStatus,
 ) -> Result<(), String> {
     let (entries, _num_shreds, _is_full) = blockstore
-        .get_slot_entries_with_shred_info(slot, 0, allow_dead_slots)
+        .get_slot_entries_with_shred_info(slot, 0, allow_dead_slots, migration_status)
         .map_err(|err| format!("Slot: {slot}, Failed to load entries, err {err:?}"))?;
 
     let num_entries = entries.len();
@@ -513,9 +515,10 @@ fn minimize_bank_for_snapshot(
     snapshot_slot: Slot,
     ending_slot: Slot,
     should_recalculate_accounts_lt_hash: bool,
+    migration_status: &MigrationStatus,
 ) -> bool {
     let ((transaction_account_set, possibly_incomplete), transaction_accounts_measure) = measure_time!(
-        blockstore.get_accounts_used_in_range(bank, snapshot_slot, ending_slot),
+        blockstore.get_accounts_used_in_range(bank, snapshot_slot, ending_slot, migration_status),
         "get transaction accounts"
     );
     let total_accounts_len = transaction_account_set.len();
@@ -1697,9 +1700,13 @@ fn main() {
         .build_global()
         .unwrap();
 
+    let migration_status = MigrationStatus::default();
+
     match matches.subcommand() {
         ("bigtable", Some(arg_matches)) => bigtable_process_command(&ledger_path, arg_matches),
-        ("blockstore", Some(arg_matches)) => blockstore_process_command(&ledger_path, arg_matches),
+        ("blockstore", Some(arg_matches)) => {
+            blockstore_process_command(&ledger_path, arg_matches, &migration_status)
+        }
         ("program", Some(arg_matches)) => program(&ledger_path, arg_matches),
         // This match case provides legacy support for commands that were previously top level
         // subcommands of the binary, but have been moved under the blockstore subcommand.
@@ -1718,7 +1725,9 @@ fn main() {
         | ("repair-roots", Some(_))
         | ("set-dead-slot", Some(_))
         | ("shred-meta", Some(_))
-        | ("slot", Some(_)) => blockstore_process_command(&ledger_path, &matches),
+        | ("slot", Some(_)) => {
+            blockstore_process_command(&ledger_path, &matches, &migration_status)
+        }
         _ => {
             let ledger_path = canonicalize_ledger_path(&ledger_path);
 
@@ -2420,6 +2429,7 @@ fn main() {
                             snapshot_slot,
                             ending_slot.unwrap(),
                             arg_matches.is_present("recalculate_accounts_lt_hash"),
+                            &migration_status,
                         )
                     } else {
                         false
@@ -3165,7 +3175,12 @@ fn main() {
                     let allow_dead_slots = arg_matches.is_present("allow_dead_slots");
 
                     for slot in slots {
-                        if let Err(err) = compute_slot_cost(&blockstore, slot, allow_dead_slots) {
+                        if let Err(err) = compute_slot_cost(
+                            &blockstore,
+                            slot,
+                            allow_dead_slots,
+                            &migration_status,
+                        ) {
                             eprintln!("{err}");
                         }
                     }

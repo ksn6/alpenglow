@@ -12,6 +12,7 @@ use {
     },
     solana_clock::{Slot, DEFAULT_MS_PER_SLOT},
     solana_measure::measure::Measure,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         string::ToString,
         sync::{
@@ -216,7 +217,12 @@ impl BlockstoreCleanupService {
 
             let mut purge_time = Measure::start("purge_slots()");
             // purge any slots older than lowest_cleanup_slot.
-            blockstore.purge_slots(0, lowest_cleanup_slot, PurgeType::CompactionFilter);
+            blockstore.purge_slots(
+                0,
+                lowest_cleanup_slot,
+                PurgeType::CompactionFilter,
+                &MigrationStatus::default(),
+            );
             // Update only after purge operation.
             // Safety: This value can be used by compaction_filters shared via Arc<AtomicU64>.
             // Compactions are async and run as a multi-threaded background job. However, this

@@ -850,7 +850,7 @@ pub mod test {
         for _ in 0..10 {
             entries = broadcast_service
                 .blockstore
-                .get_slot_entries(slot, 0)
+                .get_slot_entries(slot, 0, &MigrationStatus::default())
                 .expect("Expect entries to be present");
             if entries.len() >= max_tick_height as usize {
                 break;

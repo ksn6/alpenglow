@@ -10,6 +10,7 @@ use {
     solana_ledger::blockstore::{Blockstore, CompletedDataSetInfo},
     solana_rpc::{max_slots::MaxSlots, rpc_subscriptions::RpcSubscriptions},
     solana_signature::Signature,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -34,6 +35,7 @@ impl CompletedDataSetsService {
         rpc_subscriptions: Arc<RpcSubscriptions>,
         exit: Arc<AtomicBool>,
         max_slots: Arc<MaxSlots>,
+        migration_status: Arc<MigrationStatus>,
     ) -> Self {
         let thread_hdl = Builder::new()
             .name("solComplDataSet".to_string())
@@ -48,6 +50,7 @@ impl CompletedDataSetsService {
                         &blockstore,
                         &rpc_subscriptions,
                         &max_slots,
+                        &migration_status,
                     ) {
                         break;
                     }
@@ -63,11 +66,17 @@ impl CompletedDataSetsService {
         blockstore: &Blockstore,
         rpc_subscriptions: &RpcSubscriptions,
         max_slots: &Arc<MaxSlots>,
+        migration_status: &MigrationStatus,
     ) -> Result<(), RecvTimeoutError> {
         const RECV_TIMEOUT: Duration = Duration::from_secs(1);
         let handle_completed_data_set_info = |completed_data_set_info| {
             let CompletedDataSetInfo { slot, indices } = completed_data_set_info;
-            match blockstore.get_entries_in_data_block(slot, indices, /*slot_meta:*/ None) {
+            match blockstore.get_entries_in_data_block(
+                slot,
+                indices,
+                /*slot_meta:*/ None,
+                migration_status,
+            ) {
                 Ok(entries) => {
                     let transactions = Self::get_transaction_signatures(entries);
                     if !transactions.is_empty() {

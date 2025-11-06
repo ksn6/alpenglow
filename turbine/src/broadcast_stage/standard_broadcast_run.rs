@@ -709,11 +709,16 @@ mod test {
             1
         );
         // Try to fetch ticks from blockstore, nothing should break
-        assert_eq!(blockstore.get_slot_entries(0, 0).unwrap(), ticks0);
+        assert_eq!(
+            blockstore
+                .get_slot_entries(0, 0, &MigrationStatus::default())
+                .unwrap(),
+            ticks0
+        );
         // Now with block headers, we have 2x shreds, so fetch from 2 * num_shreds_per_slot
         assert_eq!(
             blockstore
-                .get_slot_entries(0, 2 * num_shreds_per_slot)
+                .get_slot_entries(0, 2 * num_shreds_per_slot, &MigrationStatus::default())
                 .unwrap(),
             vec![],
         );
@@ -778,14 +783,15 @@ mod test {
             .is_none());
 
         // Try to fetch the incomplete ticks from blockstore; this should error out.
-        let actual = blockstore.get_slot_entries(0, 0);
+        let actual = blockstore.get_slot_entries(0, 0, &MigrationStatus::default());
         assert!(actual.is_err());
         assert!(matches!(
             actual.unwrap_err(),
             BlockstoreError::InvalidShredData(_)
         ));
 
-        let actual = blockstore.get_slot_entries(0, num_shreds_per_slot);
+        let actual =
+            blockstore.get_slot_entries(0, num_shreds_per_slot, &MigrationStatus::default());
         assert!(actual.is_err());
         assert!(matches!(
             actual.unwrap_err(),

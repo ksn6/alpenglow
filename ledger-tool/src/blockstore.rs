@@ -28,6 +28,7 @@ use {
         blockstore_options::AccessType,
         shred::Shred,
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         borrow::Cow,
         collections::{BTreeMap, BTreeSet, HashMap},
@@ -166,9 +167,13 @@ fn raw_key_to_slot(key: &[u8], column_name: &str) -> Option<Slot> {
 }
 
 /// Returns true if the supplied slot contains any nonvote transactions
-fn slot_contains_nonvote_tx(blockstore: &Blockstore, slot: Slot) -> bool {
+fn slot_contains_nonvote_tx(
+    blockstore: &Blockstore,
+    slot: Slot,
+    migration_status: &MigrationStatus,
+) -> bool {
     let (entries, _, _) = blockstore
-        .get_slot_entries_with_shred_info(slot, 0, false)
+        .get_slot_entries_with_shred_info(slot, 0, false, migration_status)
         .expect("Failed to get slot entries");
     let contains_nonvote = entries
         .iter()
@@ -187,6 +192,7 @@ fn get_latest_optimistic_slots(
     blockstore: &Blockstore,
     num_slots: usize,
     exclude_vote_only_slots: bool,
+    migration_status: &MigrationStatus,
 ) -> Vec<OptimisticSlotInfo> {
     // Consider a chain X -> Y -> Z where X and Z have been optimistically
     // confirmed. Given that Y is an ancestor of Z, Y can implicitly be
@@ -209,7 +215,7 @@ fn get_latest_optimistic_slots(
     let latest_slot = latest_slot.0;
 
     let slot_iter = AncestorIterator::new_inclusive(latest_slot, blockstore).map(|slot| {
-        let contains_nonvote_tx = slot_contains_nonvote_tx(blockstore, slot);
+        let contains_nonvote_tx = slot_contains_nonvote_tx(blockstore, slot, migration_status);
         let hash_and_timestamp_opt = blockstore
             .get_optimistic_slot(slot)
             .expect("get_optimistic_slot() failed");
@@ -584,14 +590,22 @@ pub fn blockstore_subcommands<'a, 'b>(hidden: bool) -> Vec<App<'a, 'b>> {
     ]
 }
 
-pub fn blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) {
-    do_blockstore_process_command(ledger_path, matches).unwrap_or_else(|err| {
+pub fn blockstore_process_command(
+    ledger_path: &Path,
+    matches: &ArgMatches<'_>,
+    migration_status: &MigrationStatus,
+) {
+    do_blockstore_process_command(ledger_path, matches, migration_status).unwrap_or_else(|err| {
         eprintln!("Failed to complete command: {err:?}");
         std::process::exit(1);
     });
 }
 
-fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -> Result<()> {
+fn do_blockstore_process_command(
+    ledger_path: &Path,
+    matches: &ArgMatches<'_>,
+    migration_status: &MigrationStatus,
+) -> Result<()> {
     let ledger_path = canonicalize_ledger_path(ledger_path);
     let verbose_level = matches.occurrences_of("verbose");
 
@@ -711,8 +725,12 @@ fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 crate::open_blockstore(&ledger_path, arg_matches, AccessType::Secondary);
             let num_slots = value_t_or_exit!(arg_matches, "num_slots", usize);
             let exclude_vote_only_slots = arg_matches.is_present("exclude_vote_only_slots");
-            let slots =
-                get_latest_optimistic_slots(&blockstore, num_slots, exclude_vote_only_slots);
+            let slots = get_latest_optimistic_slots(
+                &blockstore,
+                num_slots,
+                exclude_vote_only_slots,
+                migration_status,
+            );
 
             println!(
                 "{:>20} {:>44} {:>32} {:>13}",
@@ -762,7 +780,11 @@ fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 .into_iter()
                 .rev()
             {
-                let blockhash = blockstore.get_slot_entries(slot, 0)?.last().unwrap().hash;
+                let blockhash = blockstore
+                    .get_slot_entries(slot, 0, migration_status)?
+                    .last()
+                    .unwrap()
+                    .hash;
                 writeln!(output, "{slot}: {blockhash:?}").expect("failed to write");
             }
         }
@@ -843,6 +865,7 @@ fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 num_slots,
                 verbose_level,
                 only_rooted,
+                migration_status,
             )?;
         }
         ("print-file-metadata", Some(arg_matches)) => {
@@ -897,9 +920,14 @@ fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
             let purge_from_blockstore = |start_slot, end_slot| {
                 blockstore.purge_from_next_slots(start_slot, end_slot);
                 if perform_compaction {
-                    blockstore.purge_and_compact_slots(start_slot, end_slot);
+                    blockstore.purge_and_compact_slots(start_slot, end_slot, migration_status);
                 } else {
-                    blockstore.purge_slots(start_slot, end_slot, PurgeType::Exact);
+                    blockstore.purge_slots(
+                        start_slot,
+                        end_slot,
+                        PurgeType::Exact,
+                        migration_status,
+                    );
                 }
             };
             if !dead_slots_only {
@@ -1038,6 +1066,7 @@ fn do_blockstore_process_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                     &output_format,
                     verbose_level,
                     &mut HashMap::new(),
+                    migration_status,
                 )?;
             }
         }
@@ -1057,6 +1086,7 @@ pub mod tests {
     fn test_latest_optimistic_ancestors() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+        let migration_status = MigrationStatus::default();
 
         // Insert 5 slots into blockstore
         let start_slot = 0;
@@ -1073,11 +1103,15 @@ pub mod tests {
         });
 
         let exclude_vote_only_slots = false;
-        let optimistic_slots: Vec<_> =
-            get_latest_optimistic_slots(&blockstore, num_slots as usize, exclude_vote_only_slots)
-                .iter()
-                .map(|(slot, _, _)| *slot)
-                .collect();
+        let optimistic_slots: Vec<_> = get_latest_optimistic_slots(
+            &blockstore,
+            num_slots as usize,
+            exclude_vote_only_slots,
+            &migration_status,
+        )
+        .iter()
+        .map(|(slot, _, _)| *slot)
+        .collect();
 
         // Should see all slots here since they're all chained, despite only evens getting marked
         // get_latest_optimistic_slots() returns slots in descending order so use .rev()

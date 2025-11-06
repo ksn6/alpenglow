@@ -41,6 +41,7 @@ use {
         BlockEncodingOptions, ConfirmedBlock, EncodeError, VersionedConfirmedBlock,
     },
     solana_vote::vote_transaction::VoteTransaction,
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         cell::RefCell,
         collections::{HashMap, VecDeque},
@@ -1010,7 +1011,7 @@ impl RpcSubscriptions {
                                 }
 
                                 let block_update_result = blockstore
-                                    .get_complete_block(s, false)
+                                    .get_complete_block(s, false, &MigrationStatus::default())
                                     .map_err(|e| {
                                         error!("get_complete_block error: {e}");
                                         RpcBlockUpdateError::BlockStoreError
@@ -1490,8 +1491,11 @@ pub(crate) mod tests {
         let actual_resp = receiver.recv();
         let actual_resp = serde_json::from_str::<serde_json::Value>(&actual_resp).unwrap();
 
-        let confirmed_block =
-            ConfirmedBlock::from(blockstore.get_complete_block(slot, false).unwrap());
+        let confirmed_block = ConfirmedBlock::from(
+            blockstore
+                .get_complete_block(slot, false, &MigrationStatus::default())
+                .unwrap(),
+        );
         let block = confirmed_block
             .encode_with_options(
                 params.encoding,
@@ -1610,8 +1614,11 @@ pub(crate) mod tests {
         let actual_resp = serde_json::from_str::<serde_json::Value>(&actual_resp).unwrap();
 
         // make sure it filtered out the other keypairs
-        let mut confirmed_block =
-            ConfirmedBlock::from(blockstore.get_complete_block(slot, false).unwrap());
+        let mut confirmed_block = ConfirmedBlock::from(
+            blockstore
+                .get_complete_block(slot, false, &MigrationStatus::default())
+                .unwrap(),
+        );
         confirmed_block.transactions.retain(|tx_with_meta| {
             tx_with_meta
                 .account_keys()
@@ -1728,8 +1735,11 @@ pub(crate) mod tests {
         let actual_resp = receiver.recv();
         let actual_resp = serde_json::from_str::<serde_json::Value>(&actual_resp).unwrap();
 
-        let confirmed_block =
-            ConfirmedBlock::from(blockstore.get_complete_block(slot, false).unwrap());
+        let confirmed_block = ConfirmedBlock::from(
+            blockstore
+                .get_complete_block(slot, false, &MigrationStatus::default())
+                .unwrap(),
+        );
         let block = confirmed_block
             .encode_with_options(
                 params.encoding,

@@ -894,6 +894,10 @@ impl Validator {
         cluster_info.restore_contact_info(ledger_path, config.contact_save_interval);
         cluster_info.set_bind_ip_addrs(node.bind_ip_addrs.clone());
         let cluster_info = Arc::new(cluster_info);
+        let migration_status = Arc::new(initialize_migration_status(
+            cluster_info.id(),
+            bank_forks.read().unwrap().root_bank(),
+        ));
         let node_multihoming = Arc::new(NodeMultihoming::from(&node));
 
         assert!(is_snapshot_config_valid(&config.snapshot_config));
@@ -1246,6 +1250,7 @@ impl Validator {
                 prioritization_fee_cache: prioritization_fee_cache.clone(),
                 client_option,
                 alpenglow_last_voted: Some(alpenglow_last_voted.clone()),
+                migration_status: migration_status.clone(),
             };
             let json_rpc_service =
                 JsonRpcService::new_with_config(rpc_svc_config).map_err(ValidatorError::Other)?;
@@ -1288,6 +1293,7 @@ impl Validator {
                         rpc_subscriptions.clone(),
                         exit.clone(),
                         max_slots.clone(),
+                        migration_status.clone(),
                     );
                     (
                         Some(completed_data_sets_sender),
@@ -1380,10 +1386,6 @@ impl Validator {
             Some(stats_reporter_sender.clone()),
             exit.clone(),
         );
-        let migration_status = Arc::new(initialize_migration_status(
-            cluster_info.id(),
-            bank_forks.read().unwrap().root_bank(),
-        ));
         let serve_repair = config.repair_handler_type.create_serve_repair(
             blockstore.clone(),
             cluster_info.clone(),
@@ -2771,7 +2773,12 @@ fn cleanup_blockstore_incorrect_shred_versions(
     info!("Purging slots {start_slot} to {end_slot} from blockstore");
     let mut timer = Measure::start("blockstore purge");
     blockstore.purge_from_next_slots(start_slot, end_slot);
-    blockstore.purge_slots(start_slot, end_slot, PurgeType::Exact);
+    blockstore.purge_slots(
+        start_slot,
+        end_slot,
+        PurgeType::Exact,
+        &MigrationStatus::default(),
+    );
     timer.stop();
     info!("Purging slots done. {timer}");
 
@@ -3259,7 +3266,12 @@ mod tests {
 
         // Purge blockstore up to latest hard fork
         // No check since all blockstore data newer than latest hard fork
-        blockstore.purge_slots(0, latest_hard_fork, PurgeType::Exact);
+        blockstore.purge_slots(
+            0,
+            latest_hard_fork,
+            PurgeType::Exact,
+            &MigrationStatus::default(),
+        );
         assert_eq!(
             should_cleanup_blockstore_incorrect_shred_versions(
                 &validator_config,

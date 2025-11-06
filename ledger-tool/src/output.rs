@@ -33,6 +33,7 @@ use {
         UiTransactionEncoding, VersionedConfirmedBlock, VersionedConfirmedBlockWithEntries,
         VersionedTransactionWithStatusMeta,
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{
         cell::RefCell,
         collections::HashMap,
@@ -548,6 +549,7 @@ pub fn output_slot(
     output_format: &OutputFormat,
     verbose_level: u64,
     all_program_ids: &mut HashMap<Pubkey, u64>,
+    migration_status: &MigrationStatus,
 ) -> Result<()> {
     let is_root = blockstore.is_root(slot);
     let is_dead = blockstore.is_dead(slot);
@@ -579,6 +581,7 @@ pub fn output_slot(
         /*require_previous_blockhash:*/ false,
         /*populate_entries:*/ true,
         allow_dead_slots,
+        migration_status,
     ) {
         Ok(VersionedConfirmedBlockWithEntries { block, entries }) => {
             (BlockContents::VersionedConfirmedBlock(block), entries)
@@ -590,6 +593,7 @@ pub fn output_slot(
                 slot,
                 /*shred_start_index:*/ 0,
                 allow_dead_slots,
+                migration_status,
             )?;
 
             let blockhash = entries
@@ -696,6 +700,7 @@ pub fn output_ledger(
     num_slots: Option<Slot>,
     verbose_level: u64,
     only_rooted: bool,
+    migration_status: &MigrationStatus,
 ) -> Result<()> {
     let slot_iterator = blockstore.slot_meta_iterator(starting_slot)?;
 
@@ -721,6 +726,7 @@ pub fn output_ledger(
             &output_format,
             verbose_level,
             &mut all_program_ids,
+            migration_status,
         ) {
             eprintln!("{err}");
         }

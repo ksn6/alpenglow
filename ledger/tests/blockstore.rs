@@ -5,6 +5,7 @@ use {
         blockstore::{self, make_many_slot_entries, test_all_empty_or_min, Blockstore},
         get_tmp_ledger_path_auto_delete,
     },
+    solana_votor_messages::migration::MigrationStatus,
     std::{sync::Arc, thread::Builder},
 };
 
@@ -43,7 +44,7 @@ fn test_multiple_threads_insert_shred() {
         assert_eq!(meta0.next_slots, expected_next_slots);
 
         // Delete slots for next iteration
-        blockstore.purge_and_compact_slots(0, num_threads + 1);
+        blockstore.purge_and_compact_slots(0, num_threads + 1, &MigrationStatus::default());
     }
 }
 
@@ -55,6 +56,6 @@ fn test_purge_huge() {
     let (shreds, _) = make_many_slot_entries(0, 5000, 10);
     blockstore.insert_shreds(shreds, None, false).unwrap();
 
-    blockstore.purge_and_compact_slots(0, 4999);
+    blockstore.purge_and_compact_slots(0, 4999, &MigrationStatus::default());
     test_all_empty_or_min(&blockstore, 5000);
 }

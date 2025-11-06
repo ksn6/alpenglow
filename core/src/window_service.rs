@@ -513,6 +513,7 @@ mod test {
     fn test_process_shred() {
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
+        let migration_status = MigrationStatus::default();
         let num_entries = 10;
         let original_entries = create_ticks(num_entries, 0, Hash::default());
         let mut shreds = local_entries_to_shred(&original_entries, 0, 0, &Keypair::new());
@@ -521,7 +522,12 @@ mod test {
             .insert_shreds(shreds, None, false)
             .expect("Expect successful processing of shred");
 
-        assert_eq!(blockstore.get_slot_entries(0, 0).unwrap(), original_entries);
+        assert_eq!(
+            blockstore
+                .get_slot_entries(0, 0, &migration_status)
+                .unwrap(),
+            original_entries
+        );
     }
 
     #[test]

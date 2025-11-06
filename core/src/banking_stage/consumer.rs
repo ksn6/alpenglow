@@ -538,6 +538,7 @@ mod tests {
             sanitized::MessageHash, versioned::VersionedTransaction, Transaction,
         },
         solana_transaction_status::{TransactionStatusMeta, VersionedTransactionWithStatusMeta},
+        solana_votor_messages::migration::MigrationStatus,
         std::{
             borrow::Cow,
             sync::{
@@ -1399,7 +1400,9 @@ mod tests {
 
         transaction_status_service.quiesce_and_join_for_tests(tss_exit);
 
-        let confirmed_block = blockstore.get_rooted_block(bank.slot(), false).unwrap();
+        let confirmed_block = blockstore
+            .get_rooted_block(bank.slot(), false, &MigrationStatus::default())
+            .unwrap();
         let actual_tx_results: Vec<_> = confirmed_block
             .transactions
             .into_iter()
@@ -1542,7 +1545,9 @@ mod tests {
 
         transaction_status_service.quiesce_and_join_for_tests(tss_exit);
 
-        let mut confirmed_block = blockstore.get_rooted_block(bank.slot(), false).unwrap();
+        let mut confirmed_block = blockstore
+            .get_rooted_block(bank.slot(), false, &MigrationStatus::default())
+            .unwrap();
         assert_eq!(confirmed_block.transactions.len(), 1);
 
         let recorded_meta = confirmed_block.transactions.pop().unwrap().meta;

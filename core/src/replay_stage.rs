@@ -1454,7 +1454,7 @@ impl ReplayStage {
         if end_slot >= start_slot {
             warn!("{my_pubkey}: Purging shreds {start_slot} to {end_slot} from blockstore");
             blockstore.purge_from_next_slots(start_slot, end_slot);
-            blockstore.purge_slots(start_slot, end_slot, PurgeType::Exact);
+            blockstore.purge_slots(start_slot, end_slot, PurgeType::Exact, migration_status);
         }
 
         migration_status.enable_alpenglow(exit);
@@ -2529,6 +2529,7 @@ impl ReplayStage {
         verify_recyclers: &VerifyRecyclers,
         log_messages_bytes_limit: Option<usize>,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> result::Result<usize, BlockstoreProcessorError> {
         let mut w_replay_stats = replay_stats.write().unwrap();
         let mut w_replay_progress = replay_progress.write().unwrap();
@@ -2550,6 +2551,7 @@ impl ReplayStage {
             false,
             log_messages_bytes_limit,
             prioritization_fee_cache,
+            migration_status,
         )?;
         let tx_count_after = w_replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
@@ -3196,6 +3198,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         active_bank_slots: &[Slot],
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> Vec<ReplaySlotFromBlockstore> {
         // Make mutable shared structures thread safe.
         let progress = RwLock::new(progress);
@@ -3278,6 +3281,7 @@ impl ReplayStage {
                             &verify_recyclers.clone(),
                             log_messages_bytes_limit,
                             prioritization_fee_cache,
+                            migration_status,
                         );
                         replay_blockstore_time.stop();
                         replay_result.replay_result = Some(blockstore_result);
@@ -3311,6 +3315,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         bank_slot: Slot,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> ReplaySlotFromBlockstore {
         let mut replay_result = ReplaySlotFromBlockstore {
             is_slot_dead: false,
@@ -3367,6 +3372,7 @@ impl ReplayStage {
                     &verify_recyclers.clone(),
                     log_messages_bytes_limit,
                     prioritization_fee_cache,
+                    migration_status,
                 );
                 replay_blockstore_time.stop();
                 replay_result.replay_result = Some(blockstore_result);
@@ -3762,6 +3768,7 @@ impl ReplayStage {
                     log_messages_bytes_limit,
                     &active_bank_slots,
                     prioritization_fee_cache,
+                    migration_status,
                 )
             }
             ForkReplayMode::Serial | ForkReplayMode::Parallel(_) => active_bank_slots
@@ -3782,6 +3789,7 @@ impl ReplayStage {
                         log_messages_bytes_limit,
                         *bank_slot,
                         prioritization_fee_cache,
+                        migration_status,
                     )
                 })
                 .collect(),
@@ -5449,6 +5457,7 @@ pub(crate) mod tests {
                 &VerifyRecyclers::default(),
                 None,
                 &PrioritizationFeeCache::new(0u64),
+                &MigrationStatus::default(),
             );
             let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
             let rpc_subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
@@ -5675,7 +5684,9 @@ pub(crate) mod tests {
             );
 
             let mut test_signatures_iter = test_signatures.into_iter();
-            let confirmed_block = blockstore.get_rooted_block(slot, false).unwrap();
+            let confirmed_block = blockstore
+                .get_rooted_block(slot, false, &MigrationStatus::default())
+                .unwrap();
             let actual_tx_results: Vec<_> = confirmed_block
                 .transactions
                 .into_iter()
@@ -6610,6 +6621,7 @@ pub(crate) mod tests {
     #[test]
     fn test_purge_unconfirmed_duplicate_slot() {
         let (vote_simulator, blockstore) = setup_default_forks(2, None::<GenerateVotes>);
+        let migration_status = MigrationStatus::default();
         let VoteSimulator {
             bank_forks,
             node_pubkeys,
@@ -6695,12 +6707,18 @@ pub(crate) mod tests {
         for slot in &[5, 6] {
             assert!(!blockstore.is_full(*slot));
             assert!(!blockstore.is_dead(*slot));
-            assert!(blockstore.get_slot_entries(*slot, 0).unwrap().is_empty());
+            assert!(blockstore
+                .get_slot_entries(*slot, 0, &migration_status)
+                .unwrap()
+                .is_empty());
         }
 
         // Slot 7 was marked dead before, should no longer be marked
         assert!(!blockstore.is_dead(7));
-        assert!(!blockstore.get_slot_entries(7, 0).unwrap().is_empty());
+        assert!(!blockstore
+            .get_slot_entries(7, 0, &migration_status)
+            .unwrap()
+            .is_empty());
 
         // Should not be able to find signature in slot 5 for previously
         // processed transactions
@@ -6725,12 +6743,18 @@ pub(crate) mod tests {
         for i in 4..=6 {
             assert!(bank_forks.read().unwrap().get(i).is_none());
             assert!(progress.get(&i).is_none());
-            assert!(blockstore.get_slot_entries(i, 0).unwrap().is_empty());
+            assert!(blockstore
+                .get_slot_entries(i, 0, &migration_status)
+                .unwrap()
+                .is_empty());
         }
         for i in 0..=3 {
             assert!(bank_forks.read().unwrap().get(i).is_some());
             assert!(progress.get(&i).is_some());
-            assert!(!blockstore.get_slot_entries(i, 0).unwrap().is_empty());
+            assert!(!blockstore
+                .get_slot_entries(i, 0, &migration_status)
+                .unwrap()
+                .is_empty());
         }
 
         // Purging slot 1 should purge both forks 2 and 3 but leave 7 untouched as it is dead
@@ -6748,14 +6772,20 @@ pub(crate) mod tests {
         for i in 1..=6 {
             assert!(bank_forks.read().unwrap().get(i).is_none());
             assert!(progress.get(&i).is_none());
-            assert!(blockstore.get_slot_entries(i, 0).unwrap().is_empty());
+            assert!(blockstore
+                .get_slot_entries(i, 0, &migration_status)
+                .unwrap()
+                .is_empty());
         }
         assert!(bank_forks.read().unwrap().get(0).is_some());
         assert!(progress.get(&0).is_some());
 
         // Slot 7 untouched
         assert!(!blockstore.is_dead(7));
-        assert!(!blockstore.get_slot_entries(7, 0).unwrap().is_empty());
+        assert!(!blockstore
+            .get_slot_entries(7, 0, &migration_status)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -6773,6 +6803,7 @@ pub(crate) mod tests {
             None::<GenerateVotes>,
         );
 
+        let migration_status = MigrationStatus::default();
         let VoteSimulator {
             bank_forks,
             mut progress,
@@ -6819,11 +6850,17 @@ pub(crate) mod tests {
         for slot in &[3, 5] {
             assert!(!blockstore.is_full(*slot));
             assert!(!blockstore.is_dead(*slot));
-            assert!(blockstore.get_slot_entries(*slot, 0).unwrap().is_empty());
+            assert!(blockstore
+                .get_slot_entries(*slot, 0, &migration_status)
+                .unwrap()
+                .is_empty());
         }
         for slot in 6..=7 {
             assert!(!blockstore.is_dead(slot));
-            assert!(!blockstore.get_slot_entries(slot, 0).unwrap().is_empty())
+            assert!(!blockstore
+                .get_slot_entries(slot, 0, &migration_status)
+                .unwrap()
+                .is_empty())
         }
 
         // Simulate repair fixing slot 3 and 5
