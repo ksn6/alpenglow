@@ -863,18 +863,18 @@ impl ReplayStage {
                 );
                 let did_complete_bank = !new_frozen_slots.is_empty();
                 if migration_status.is_alpenglow_enabled() {
-                    for frozen_slot in new_frozen_slots.iter().copied() {
-                        let bank = bank_forks.read().unwrap().get(frozen_slot).unwrap();
-                        let block_id = bank.block_id();
-
+                    let bank_forks_r = bank_forks.read().unwrap();
+                    for frozen_slot in &new_frozen_slots {
+                        let bank = bank_forks_r.get(*frozen_slot).unwrap();
                         Self::maybe_notify_of_optimistic_parent(
                             &bank,
-                            block_id,
+                            bank.block_id(),
                             &my_pubkey,
                             &leader_schedule_cache,
                             &optimistic_parent_sender,
                         );
                     }
+                    drop(bank_forks_r);
 
                     if let Some(highest) = new_frozen_slots.iter().max() {
                         if *highest > highest_frozen_slot {
@@ -3428,8 +3428,7 @@ impl ReplayStage {
                     .send_timeout(leader_window_info, Duration::from_secs(1))
                     .unwrap_or_else(|err| {
                         error!(
-                            "optimistic_parent_sender failed to send leader window info: {}",
-                            err
+                            "optimistic_parent_sender failed to send leader window info: {err:?}"
                         );
                     });
             }
