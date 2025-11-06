@@ -857,14 +857,25 @@ impl ReplayStage {
                     &replay_tx_thread_pool,
                     &prioritization_fee_cache,
                     &mut purge_repair_slot_counter,
-                    &leader_schedule_cache,
                     (!migration_status.is_alpenglow_enabled()).then_some(&mut tbft_structs),
                     migration_status.as_ref(),
                     &votor_event_sender,
-                    &optimistic_parent_sender,
                 );
                 let did_complete_bank = !new_frozen_slots.is_empty();
                 if migration_status.is_alpenglow_enabled() {
+                    for frozen_slot in new_frozen_slots.iter().copied() {
+                        let bank = bank_forks.read().unwrap().get(frozen_slot).unwrap();
+                        let block_id = bank.block_id();
+
+                        Self::maybe_notify_of_optimistic_parent(
+                            &bank,
+                            block_id,
+                            &my_pubkey,
+                            &leader_schedule_cache,
+                            &optimistic_parent_sender,
+                        );
+                    }
+
                     if let Some(highest) = new_frozen_slots.iter().max() {
                         if *highest > highest_frozen_slot {
                             highest_frozen_slot = *highest;
@@ -3414,8 +3425,12 @@ impl ReplayStage {
                 };
 
                 optimistic_parent_sender
-                    .send_timeout(leader_window_info, Duration::from_secs(1)).unwrap_or_else(|err| {
-                        error!("optimistic_parent_sender failed to send leader window info: {}", err);
+                    .send_timeout(leader_window_info, Duration::from_secs(1))
+                    .unwrap_or_else(|err| {
+                        error!(
+                            "optimistic_parent_sender failed to send leader window info: {}",
+                            err
+                        );
                     });
             }
         }
@@ -3438,12 +3453,10 @@ impl ReplayStage {
         block_metadata_notifier: Option<BlockMetadataNotifierArc>,
         replay_result_vec: &[ReplaySlotFromBlockstore],
         purge_repair_slot_counter: &mut PurgeRepairSlotCounter,
-        leader_schedule_cache: &Arc<LeaderScheduleCache>,
         my_pubkey: &Pubkey,
         mut tbft_structs: Option<&mut TowerBFTStructures>,
         migration_status: &MigrationStatus,
         votor_event_sender: &VotorEventSender,
-        optimistic_parent_sender: &Sender<LeaderWindowInfo>,
     ) -> Vec<Slot> {
         // TODO: See if processing of blockstore replay results and bank completion can be made thread safe.
         let mut tx_count = 0;
@@ -3585,14 +3598,6 @@ impl ReplayStage {
                     "bank_frozen",
                     ("slot", bank_slot, i64),
                     ("hash", bank.hash().to_string(), String),
-                );
-
-                Self::maybe_notify_of_optimistic_parent(
-                    bank,
-                    block_id,
-                    my_pubkey,
-                    leader_schedule_cache,
-                    optimistic_parent_sender,
                 );
 
                 if let Some(transaction_status_sender) = transaction_status_sender {
@@ -3787,11 +3792,9 @@ impl ReplayStage {
         replay_tx_thread_pool: &ThreadPool,
         prioritization_fee_cache: &PrioritizationFeeCache,
         purge_repair_slot_counter: &mut PurgeRepairSlotCounter,
-        leader_schedule_cache: &Arc<LeaderScheduleCache>,
         tbft_structs: Option<&mut TowerBFTStructures>,
         migration_status: &MigrationStatus,
         votor_event_sender: &VotorEventSender,
-        optimistic_parent_sender: &Sender<LeaderWindowInfo>,
     ) -> Vec<Slot> /* completed slots */ {
         let active_bank_slots = bank_forks.read().unwrap().active_bank_slots();
         let num_active_banks = active_bank_slots.len();
@@ -3860,12 +3863,10 @@ impl ReplayStage {
             block_metadata_notifier,
             &replay_result_vec,
             purge_repair_slot_counter,
-            leader_schedule_cache,
             my_pubkey,
             tbft_structs,
             migration_status,
             votor_event_sender,
-            optimistic_parent_sender,
         )
     }
 
