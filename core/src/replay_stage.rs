@@ -3386,6 +3386,41 @@ impl ReplayStage {
         replay_result
     }
 
+    /// Fast leader handover: if we're going to be the next leader, and our leader window
+    /// starts on the next slot, then send the bank through the optimistic parent channel.
+    fn maybe_notify_of_optimistic_parent(
+        bank: &Arc<Bank>,
+        block_id: Option<Hash>,
+        my_pubkey: &Pubkey,
+        leader_schedule_cache: &LeaderScheduleCache,
+        optimistic_parent_sender: &Sender<LeaderWindowInfo>,
+    ) {
+        let is_next_leader = leader_schedule_cache
+            .slot_leader_at(bank.slot() + 1, Some(bank))
+            .is_some_and(|leader| &leader == my_pubkey);
+        let next_slot = bank.slot().saturating_add(1);
+
+        if is_next_leader && next_slot == first_of_consecutive_leader_slots(next_slot) {
+            if let Some(block_id) = block_id {
+                let start_slot = next_slot;
+                let end_slot = next_slot.saturating_add(NUM_CONSECUTIVE_LEADER_SLOTS - 1);
+                let parent_block = (bank.slot(), block_id);
+
+                let leader_window_info = LeaderWindowInfo {
+                    start_slot,
+                    end_slot,
+                    parent_block,
+                    skip_timer: Instant::now(), // can ignore
+                };
+
+                optimistic_parent_sender
+                    .send_timeout(leader_window_info, Duration::from_secs(1)).unwrap_or_else(|err| {
+                        error!("optimistic_parent_sender failed to send leader window info: {}", err);
+                    });
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn process_replay_results(
         blockstore: &Blockstore,
@@ -3552,30 +3587,13 @@ impl ReplayStage {
                     ("hash", bank.hash().to_string(), String),
                 );
 
-                // Fast leader handover: if we're going to be the next leader, and our leader window
-                // starts on the next slot, then send the bank through this channel.
-                let is_next_leader = leader_schedule_cache
-                    .slot_leader_at(bank.slot() + 1, Some(bank))
-                    .is_some_and(|leader| &leader == my_pubkey);
-                let next_slot = bank.slot().saturating_add(1);
-
-                if is_next_leader && next_slot == first_of_consecutive_leader_slots(next_slot) {
-                    if let Some(block_id) = block_id {
-                        let start_slot = next_slot;
-                        let end_slot = next_slot.saturating_add(NUM_CONSECUTIVE_LEADER_SLOTS - 1);
-                        let parent_block = (bank.slot(), block_id);
-
-                        let leader_window_info = LeaderWindowInfo {
-                            start_slot,
-                            end_slot,
-                            parent_block,
-                            skip_timer: Instant::now(), // can ignore
-                        };
-
-                        let _ = optimistic_parent_sender
-                            .send_timeout(leader_window_info, Duration::from_secs(1));
-                    }
-                }
+                Self::maybe_notify_of_optimistic_parent(
+                    bank,
+                    block_id,
+                    my_pubkey,
+                    leader_schedule_cache,
+                    optimistic_parent_sender,
+                );
 
                 if let Some(transaction_status_sender) = transaction_status_sender {
                     transaction_status_sender.send_transaction_status_freeze_message(bank);
