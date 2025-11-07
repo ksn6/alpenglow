@@ -3418,6 +3418,13 @@ impl ReplayStage {
             return;
         }
 
+        // TODO(ksn): if the leader has, e.g., two consecutive leader windows, this line here
+        // prevents fast leader handover from the first leader window to the second. This is because
+        // the block id is only computed after shredding a block, which occurs in broadcast, which
+        // happens after replay. This function, on the other hand, is invoked prior to replay.
+        //
+        // To address this, we should additionally add in an optimistic parent channel that goes
+        // from broadcast to replay.
         let Some(block_id) = bank.block_id() else {
             return;
         };
