@@ -18,8 +18,8 @@ use {
         leader_schedule_cache::LeaderScheduleCache,
         next_slots_iterator::NextSlotsIterator,
         shred::{
-            self, ErasureSetId, ProcessShredsStats, ReedSolomonCache, Shred, ShredData, ShredId,
-            ShredType, Shredder, DATA_SHREDS_PER_FEC_BLOCK,
+            self, ErasureSetId, ProcessShredsStats, ReedSolomonCache, Shred, ShredData, ShredFlags,
+            ShredId, ShredType, Shredder, DATA_SHREDS_PER_FEC_BLOCK,
         },
         slot_stats::{ShredSource, SlotsStats},
         transaction_address_lookup_table_scanner::scan_transaction,
@@ -41,6 +41,7 @@ use {
     solana_entry::{
         block_component::{
             BlockComponent, BlockMarkerV1, VersionedBlockHeader, VersionedBlockMarker,
+            VersionedUpdateParent,
         },
         entry::{create_ticks, Entry},
     },
@@ -1393,11 +1394,47 @@ impl Blockstore {
                 continue;
             }
 
-            self.parent_meta_cf.put_in_batch(
-                &mut shred_insertion_tracker.write_batch,
-                (slot, location),
-                working_parent_meta.as_ref(),
-            )?;
+            let key = (slot, location);
+
+            let WorkingEntry::Dirty(new_parent_meta) = working_parent_meta else {
+                continue;
+            };
+
+            let Some(old_parent_meta) = self.parent_meta_cf.get(key)? else {
+                self.parent_meta_cf.put_in_batch(
+                    &mut shred_insertion_tracker.write_batch,
+                    key,
+                    working_parent_meta.as_ref(),
+                )?;
+
+                continue;
+            };
+
+            let old_is_update_parent = old_parent_meta.populated_from_update_parent();
+            let new_is_update_parent = new_parent_meta.populated_from_update_parent();
+
+            match (old_is_update_parent, new_is_update_parent) {
+                (true, true) => {
+                    self.set_dead_slot(slot)?;
+                    return Err(BlockstoreError::MultipleUpdateParents(slot));
+                }
+                (false, false) => {
+                    self.set_dead_slot(slot)?;
+                    return Err(BlockstoreError::MultipleBlockHeaders(slot));
+                }
+                (false, true) => {
+                    // If the new parent meta is associated with an UpdateParent and the old
+                    // parent meta is associated with a BlockHeader, then update.
+                    self.parent_meta_cf.put_in_batch(
+                        &mut shred_insertion_tracker.write_batch,
+                        key,
+                        working_parent_meta.as_ref(),
+                    )?;
+                }
+                (true, false) => {
+                    // No update, since update parent takes precedence over block header
+                }
+            }
         }
 
         for (&(location, slot), index_working_set_entry) in
@@ -1986,6 +2023,114 @@ impl Blockstore {
             .or_insert(WorkingEntry::Dirty(parent_meta));
     }
 
+    /// Parse UpdateParent from data shred payload
+    fn parse_update_parent_from_data_payload(data: &[u8]) -> Option<(Slot, Hash)> {
+        // Try to deserialize as BlockComponent
+        let (component, _) = BlockComponent::from_bytes(data).ok()?;
+
+        // Check if it's a BlockMarker with UpdateParent
+        match component.as_marker()? {
+            VersionedBlockMarker::V1(BlockMarkerV1::UpdateParent(versioned_update))
+            | VersionedBlockMarker::Current(BlockMarkerV1::UpdateParent(versioned_update)) => {
+                // Extract the UpdateParentV1 from the versioned wrapper
+                match versioned_update {
+                    VersionedUpdateParent::V1(update) | VersionedUpdateParent::Current(update) => {
+                        Some((update.new_parent_slot, update.new_parent_block_id))
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn maybe_insert_update_parent(
+        &self,
+        current_shred: &Shred,
+        slot: Slot,
+        location: BlockLocation,
+        just_inserted_shreds: &HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
+        parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
+    ) {
+        let current_index = current_shred.index();
+        let fec_set_index = current_shred.fec_set_index();
+        let data_complete = current_shred.data_complete();
+
+        // Determine which shred to check for UpdateParent and which FEC set it belongs to
+        //
+        // NOTE: this only works when SIMD-0317 and SIMD-0366 have been activated!
+        let (shred_bytes, target_fec_set_index) = if data_complete {
+            // Case (a): Current shred has DATA_COMPLETE=true (end of FEC set)
+            // Check the 0th shred in the NEXT FEC set for UpdateParent
+            let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
+            let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
+
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(payload) => (Some(payload), next_fec_set_index),
+                None => (None, next_fec_set_index),
+            }
+        } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 && current_index > 0 {
+            // Case (b): Current shred has DATA_COMPLETE=false
+            // Check if the PREVIOUS shred had DATA_COMPLETE=true
+            let prev_shred_index = current_index - 1;
+            let shred_id = ShredId::new(slot, prev_shred_index, ShredType::Data);
+
+            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
+            {
+                Some(prev_payload) => {
+                    // Use get_flags to check DATA_COMPLETE without full deserialization
+                    if let Ok(flags) = shred::wire::get_flags(&prev_payload) {
+                        if flags.contains(ShredFlags::DATA_COMPLETE_SHRED) {
+                            // Previous shred was end of FEC set, current might have UpdateParent
+                            (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
+                            // (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
+                        } else {
+                            (None, fec_set_index)
+                        }
+                    } else {
+                        (None, fec_set_index)
+                    }
+                }
+                _ => (None, fec_set_index),
+            }
+        } else {
+            (None, fec_set_index)
+        };
+
+        // Process the shred bytes if we have them
+        let Some(shred_bytes) = shred_bytes else {
+            return;
+        };
+
+        let Ok(payload) = shred::layout::get_data(&shred_bytes) else {
+            return;
+        };
+
+        // Check if this is a BlockMarker
+        if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
+            return;
+        }
+
+        // Try to parse UpdateParent from the payload
+        let Some((new_parent_slot, new_parent_block_id)) =
+            Self::parse_update_parent_from_data_payload(payload)
+        else {
+            return;
+        };
+
+        // First time seeing this UpdateParent
+        let parent_meta = ParentMeta {
+            parent_slot: new_parent_slot,
+            parent_block_id: new_parent_block_id,
+            replay_fec_set_index: target_fec_set_index,
+        };
+
+        // Store the UpdateParent metadata
+        parent_meta_working_set
+            .entry((location, slot))
+            .or_insert(WorkingEntry::Dirty(parent_meta));
+    }
+
     /// Create an entry to the specified `write_batch` that performs shred
     /// insertion and associated metadata update.  The function also updates
     /// its in-memory copy of the associated metadata.
@@ -2041,6 +2186,15 @@ impl Blockstore {
         if shred.index() == 0 {
             self.maybe_insert_parent_meta(&shred, slot, location, parent_meta_working_set);
         }
+
+        // Check for update parent
+        self.maybe_insert_update_parent(
+            &shred,
+            slot,
+            location,
+            just_inserted_shreds,
+            parent_meta_working_set,
+        );
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);

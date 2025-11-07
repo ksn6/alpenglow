@@ -58,5 +58,9 @@ pub enum BlockstoreError {
     MissingMerkleRoot(Slot, u64),
     #[error("BlockComponent misalignment slot {0}, index {1}")]
     BlockComponentMisalignment(Slot, u64),
+    #[error("Multiple BlockHeaders detected slot {0}")]
+    MultipleBlockHeaders(Slot),
+    #[error("Multiple UpdateParents detected slot {0}")]
+    MultipleUpdateParents(Slot),
 }
 pub type Result<T> = std::result::Result<T, BlockstoreError>;
