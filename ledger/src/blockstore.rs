@@ -39,7 +39,9 @@ use {
     solana_address_lookup_table_interface::state::AddressLookupTable,
     solana_clock::{Slot, UnixTimestamp, DEFAULT_TICKS_PER_SECOND},
     solana_entry::{
-        block_component::BlockComponent,
+        block_component::{
+            BlockComponent, BlockMarkerV1, VersionedBlockHeader, VersionedBlockMarker,
+        },
         entry::{create_ticks, Entry},
     },
     solana_genesis_config::{GenesisConfig, DEFAULT_GENESIS_ARCHIVE, DEFAULT_GENESIS_FILE},
@@ -274,6 +276,7 @@ pub struct Blockstore {
     alt_index_cf: LedgerColumn<cf::AlternateIndex>,
     alt_data_shred_cf: LedgerColumn<cf::AlternateShredData>,
     alt_merkle_root_meta_cf: LedgerColumn<cf::AlternateMerkleRootMeta>,
+    parent_meta_cf: LedgerColumn<cf::ParentMeta>,
 
     highest_primary_index_slot: RwLock<Option<Slot>>,
     max_root: AtomicU64,
@@ -323,6 +326,9 @@ struct ShredInsertionTracker<'a> {
     // In-memory map that maintains the dirty copy of the index meta.  It will
     // later be written to `cf::Index` or `cf::AlternateIndex`
     index_working_set: HashMap<(BlockLocation, u64), IndexMetaWorkingSetEntry>,
+    // In-memory map that maintains the dirty copy of the parent meta.  It will
+    // later be written to `cf::ParentMeta`
+    parent_metas: HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
     duplicate_shreds: Vec<PossibleDuplicateShred>,
     // Collection of the current blockstore writes which will be committed
     // atomically.
@@ -341,6 +347,7 @@ impl ShredInsertionTracker<'_> {
             merkle_root_metas: HashMap::new(),
             slot_meta_working_set: HashMap::new(),
             index_working_set: HashMap::new(),
+            parent_metas: HashMap::new(),
             duplicate_shreds: vec![],
             write_batch,
             index_meta_time_us: 0,
@@ -428,6 +435,7 @@ impl Blockstore {
         let alt_index_cf = db.column();
         let alt_data_shred_cf = db.column();
         let alt_merkle_root_meta_cf = db.column();
+        let parent_meta_cf = db.column();
 
         // Get max root or 0 if it doesn't exist
         let max_root = roots_cf
@@ -468,6 +476,7 @@ impl Blockstore {
             alt_index_cf,
             alt_data_shred_cf,
             alt_merkle_root_meta_cf,
+            parent_meta_cf,
 
             highest_primary_index_slot: RwLock::<Option<Slot>>::default(),
             new_shreds_signals: Mutex::default(),
@@ -613,6 +622,16 @@ impl Blockstore {
             return Ok(None);
         };
         Ok(shred::layout::get_chained_merkle_root(&shred))
+    }
+
+    /// Returns the ParentMeta for the specified slot and location.
+    pub fn get_parent_meta(
+        &self,
+        slot: Slot,
+        location: Option<BlockLocation>,
+    ) -> Result<Option<ParentMeta>> {
+        self.parent_meta_cf
+            .get((slot, location.unwrap_or(BlockLocation::Original)))
     }
 
     /// Returns the BlockVersions of the specified slot.
@@ -1370,6 +1389,19 @@ impl Blockstore {
             )?;
         }
 
+        for (&(location, slot), working_parent_meta) in &shred_insertion_tracker.parent_metas {
+            if !working_parent_meta.should_write() {
+                // No need to rewrite the column
+                continue;
+            }
+
+            self.parent_meta_cf.put_in_batch(
+                &mut shred_insertion_tracker.write_batch,
+                (slot, location),
+                working_parent_meta.as_ref(),
+            )?;
+        }
+
         for (&(location, slot), index_working_set_entry) in
             shred_insertion_tracker.index_working_set.iter()
         {
@@ -1896,6 +1928,70 @@ impl Blockstore {
         None
     }
 
+    /// Parse BlockHeader from data shred payload
+    fn parse_block_header_from_data_payload(data: &[u8]) -> Option<(Slot, Hash)> {
+        // Try to deserialize as BlockComponent
+        let (component, _) = BlockComponent::from_bytes(data).ok()?;
+
+        // If we were able to parse the component, it must be a block marker
+        let marker = component.as_marker()?;
+
+        // Check if it's a BlockMarker with BlockHeader
+        match marker {
+            VersionedBlockMarker::V1(BlockMarkerV1::BlockHeader(header))
+            | VersionedBlockMarker::Current(BlockMarkerV1::BlockHeader(header)) => {
+                // Extract the BlockHeader from the versioned wrapper
+                match header {
+                    VersionedBlockHeader::V1(update) | VersionedBlockHeader::Current(update) => {
+                        Some((update.parent_slot, update.parent_block_id))
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn check_for_block_header(
+        &self,
+        current_shred: &Shred,
+        slot: Slot,
+        location: BlockLocation,
+        parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
+    ) -> Option<ParentMeta> {
+        let current_index = current_shred.index();
+
+        // The contents of BlockHeaderV1 entirely fit into a single shred. So, let's just parse the
+        // first shred.
+        if current_index != 0 {
+            return None;
+        }
+
+        let shred_bytes = current_shred.payload();
+        let Ok(payload) = shred::layout::get_data(shred_bytes) else {
+            return None;
+        };
+
+        // Check whether this is a BlockMarker
+        if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
+            return None;
+        }
+
+        // Try to parse BlockHeader from the payload
+        let (parent_slot, parent_block_id) = Self::parse_block_header_from_data_payload(payload)?;
+
+        let parent_meta = ParentMeta {
+            parent_slot,
+            parent_block_id,
+            replay_fec_set_index: 0,
+        };
+
+        parent_meta_working_set
+            .entry((location, slot))
+            .or_insert(WorkingEntry::Dirty(parent_meta));
+
+        Some(parent_meta)
+    }
+
     /// Create an entry to the specified `write_batch` that performs shred
     /// insertion and associated metadata update.  The function also updates
     /// its in-memory copy of the associated metadata.
@@ -1939,12 +2035,16 @@ impl Blockstore {
             slot_meta_working_set,
             just_inserted_shreds,
             merkle_root_metas,
+            parent_metas: parent_meta_working_set,
             duplicate_shreds,
             index_meta_time_us,
             erasure_metas,
             write_batch,
             newly_completed_data_sets,
         } = shred_insertion_tracker;
+
+        // Check for block header
+        let _ = self.check_for_block_header(&shred, slot, location, parent_meta_working_set);
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);

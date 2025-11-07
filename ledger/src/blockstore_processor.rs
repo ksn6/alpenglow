@@ -845,6 +845,15 @@ pub enum BlockstoreProcessorError {
 
     #[error("block component processor error: {0}")]
     BlockComponentProcessor(#[from] BlockComponentProcessorError),
+
+    #[error("block header found in pre-Alpenglow migration at slot {0}")]
+    BlockHeaderFoundInPreAlpenglowMigration(Slot),
+
+    #[error("block header not found at slot {0}")]
+    BlockHeaderNotFound(Slot),
+
+    #[error("block header parent mismatch at slot {0}")]
+    BlockHeaderParentMismatch(Slot),
 }
 
 /// Callback for accessing bank state after each slot is confirmed while
