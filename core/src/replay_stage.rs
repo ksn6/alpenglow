@@ -33,6 +33,7 @@ use {
         window_service::DuplicateSlotReceiver,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError, Sender},
+    itertools::Itertools,
     rayon::{
         iter::{IntoParallelIterator, ParallelIterator},
         ThreadPool,
@@ -873,6 +874,7 @@ impl ReplayStage {
                         new_frozen_slots
                             .iter()
                             .filter_map(|slot| bank_forks_r.get(*slot))
+                            .collect_vec()
                     };
                     for bank in fast_leader_handover_notifies {
                         Self::maybe_notify_of_optimistic_parent(
