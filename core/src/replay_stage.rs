@@ -868,10 +868,12 @@ impl ReplayStage {
                 );
                 let did_complete_bank = !new_frozen_slots.is_empty();
                 if migration_status.is_alpenglow_enabled() {
-                    let bank_forks_r = bank_forks.read().unwrap();
-                    let fast_leader_handover_notifies = new_frozen_slots
-                        .iter()
-                        .filter_map(|slot| bank_forks_r.get(*slot));
+                    let fast_leader_handover_notifies = {
+                        let bank_forks_r = bank_forks.read().unwrap();
+                        new_frozen_slots
+                            .iter()
+                            .filter_map(|slot| bank_forks_r.get(*slot))
+                    };
                     for bank in fast_leader_handover_notifies {
                         Self::maybe_notify_of_optimistic_parent(
                             &bank,
