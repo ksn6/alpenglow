@@ -1432,6 +1432,8 @@ impl Validator {
             record_receiver_sender,
         );
 
+        let (optimistic_parent_sender, optimistic_parent_receiver) = unbounded();
+
         let block_creation_loop_config = BlockCreationLoopConfig {
             exit: exit.clone(),
             bank_forks: bank_forks.clone(),
@@ -1446,6 +1448,7 @@ impl Validator {
             leader_window_info_receiver: leader_window_info_receiver.clone(),
             replay_highest_frozen: replay_highest_frozen.clone(),
             highest_parent_ready: highest_parent_ready.clone(),
+            optimistic_parent_receiver: optimistic_parent_receiver.clone(),
         };
         let block_creation_loop = BlockCreationLoop::new(block_creation_loop_config);
 
@@ -1696,6 +1699,7 @@ impl Validator {
             config.voting_service_test_override.clone(),
             votor_event_sender.clone(),
             votor_event_receiver,
+            optimistic_parent_sender,
             alpenglow_quic_server_config,
             staked_nodes.clone(),
             key_notifiers.clone(),
