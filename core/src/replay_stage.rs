@@ -2623,6 +2623,7 @@ impl ReplayStage {
         verify_recyclers: &VerifyRecyclers,
         log_messages_bytes_limit: Option<usize>,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> result::Result<usize, BlockstoreProcessorError> {
         let mut w_replay_stats = replay_stats.write().unwrap();
         let mut w_replay_progress = replay_progress.write().unwrap();
@@ -2644,6 +2645,7 @@ impl ReplayStage {
             false,
             log_messages_bytes_limit,
             prioritization_fee_cache,
+            migration_status,
         )?;
         let tx_count_after = w_replay_progress.num_txs;
         let tx_count = tx_count_after - tx_count_before;
@@ -3290,6 +3292,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         active_bank_slots: &[Slot],
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> Vec<ReplaySlotFromBlockstore> {
         // Make mutable shared structures thread safe.
         let progress = RwLock::new(progress);
@@ -3372,6 +3375,7 @@ impl ReplayStage {
                             &verify_recyclers.clone(),
                             log_messages_bytes_limit,
                             prioritization_fee_cache,
+                            migration_status,
                         );
                         replay_blockstore_time.stop();
                         replay_result.replay_result = Some(blockstore_result);
@@ -3405,6 +3409,7 @@ impl ReplayStage {
         log_messages_bytes_limit: Option<usize>,
         bank_slot: Slot,
         prioritization_fee_cache: &PrioritizationFeeCache,
+        migration_status: &MigrationStatus,
     ) -> ReplaySlotFromBlockstore {
         let mut replay_result = ReplaySlotFromBlockstore {
             is_slot_dead: false,
@@ -3461,6 +3466,7 @@ impl ReplayStage {
                     &verify_recyclers.clone(),
                     log_messages_bytes_limit,
                     prioritization_fee_cache,
+                    migration_status,
                 );
                 replay_blockstore_time.stop();
                 replay_result.replay_result = Some(blockstore_result);
@@ -3904,6 +3910,7 @@ impl ReplayStage {
                     log_messages_bytes_limit,
                     &active_bank_slots,
                     prioritization_fee_cache,
+                    migration_status,
                 )
             }
             ForkReplayMode::Serial | ForkReplayMode::Parallel(_) => active_bank_slots
@@ -3924,6 +3931,7 @@ impl ReplayStage {
                         log_messages_bytes_limit,
                         *bank_slot,
                         prioritization_fee_cache,
+                        migration_status,
                     )
                 })
                 .collect(),
@@ -4712,7 +4720,7 @@ impl ReplayStage {
                     slot_status_notifier,
                     options,
                 );
-                blockstore_processor::set_alpenglow_ticks(&child_bank);
+                blockstore_processor::set_alpenglow_ticks(&child_bank, migration_status);
                 let empty: Vec<Pubkey> = vec![];
                 Self::update_fork_propagated_threshold_from_votes(
                     progress,
@@ -5628,6 +5636,7 @@ pub(crate) mod tests {
                 &VerifyRecyclers::default(),
                 None,
                 &PrioritizationFeeCache::new(0u64),
+                &MigrationStatus::default(),
             );
             let max_complete_transaction_status_slot = Arc::new(AtomicU64::default());
             let rpc_subscriptions = Arc::new(RpcSubscriptions::new_for_tests(
@@ -9743,6 +9752,7 @@ pub(crate) mod tests {
             None,
             &recyclers,
             None,
+            &MigrationStatus::default(),
         )
         .unwrap();
 
@@ -9768,6 +9778,7 @@ pub(crate) mod tests {
             None,
             None,
             &mut ExecuteTimings::default(),
+            &MigrationStatus::default(),
         )
         .unwrap();
 
