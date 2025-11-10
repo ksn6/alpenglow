@@ -20,7 +20,7 @@ use {
     arc_swap::ArcSwapOption,
     crossbeam_channel::{bounded, unbounded, Receiver, SendError, Sender, TrySendError},
     log::*,
-    solana_clock::{Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
+    solana_clock::{Slot, DEFAULT_MS_PER_SLOT, NUM_CONSECUTIVE_LEADER_SLOTS},
     solana_entry::{
         block_component::{
             BlockFooterV1, BlockMarkerV1, VersionedBlockFooter, VersionedBlockMarker,
@@ -977,13 +977,44 @@ impl PohRecorder {
         self.clear_bank();
     }
 
+    fn skew_block_producer_time_nanos(
+        parent_slot: Slot,
+        parent_time: u64,
+        working_bank_slot: Slot,
+        working_bank_time: u64,
+    ) -> u64 {
+        let default_ns_per_slot = DEFAULT_MS_PER_SLOT * 1_000_000;
+        let diff_slots = working_bank_slot.saturating_sub(parent_slot);
+
+        let min_working_bank_time = parent_time.saturating_add(1);
+        let max_working_bank_time =
+            parent_time.saturating_add(2 * diff_slots * default_ns_per_slot);
+
+        working_bank_time
+            .max(min_working_bank_time)
+            .min(max_working_bank_time)
+    }
+
     pub fn working_bank_block_producer_time_nanos(&self) -> u64 {
-        self.working_bank()
-            .unwrap()
+        let working_bank = self.working_bank().unwrap();
+        let working_bank_time = working_bank
             .start
             .duration_since(UNIX_EPOCH)
             .expect("Misconfigured system clock; couldn't measure block producer time.")
-            .as_nanos() as u64
+            .as_nanos() as u64;
+
+        let Some(parent) = working_bank.bank.parent() else {
+            return working_bank_time;
+        };
+
+        let parent_time = parent.clock().unix_timestamp as u64;
+
+        Self::skew_block_producer_time_nanos(
+            parent.slot(),
+            parent_time,
+            working_bank.bank.slot(),
+            working_bank_time,
+        )
     }
 
     fn produce_block_footer(&self, working_bank: &WorkingBank) -> VersionedBlockMarker {
