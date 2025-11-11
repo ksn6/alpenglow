@@ -115,11 +115,12 @@ use {
         invoke_context::BuiltinFunctionWithContext, loaded_programs::ProgramCacheEntry,
     },
     solana_pubkey::{Pubkey, PubkeyHasherBuilder},
+    solana_rent::Rent,
     solana_reward_info::RewardInfo,
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_with_meta::TransactionWithMeta,
     },
-    solana_sdk_ids::{bpf_loader_upgradeable, incinerator, native_loader},
+    solana_sdk_ids::{bpf_loader_upgradeable, incinerator, native_loader, system_program},
     solana_sha256_hasher::hashv,
     solana_signature::Signature,
     solana_slot_hashes::SlotHashes,
@@ -175,7 +176,7 @@ use {
                 AtomicBool, AtomicI64, AtomicU64,
                 Ordering::{self, AcqRel, Acquire, Relaxed},
             },
-            Arc, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+            Arc, LazyLock, LockResult, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
         },
         time::{Duration, Instant},
     },
@@ -214,6 +215,14 @@ pub(crate) mod tests;
 pub const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;
 
 pub const MAX_LEADER_SCHEDULE_STAKES: Epoch = 5;
+
+/// The off-curve account where we store the Alpenglow clock. The clock sysvar has seconds
+/// resolution while the Alpenglow clock has nanosecond resolution.
+pub static ALPENGLOW_CLOCK_ACCOUNT: LazyLock<Pubkey> = LazyLock::new(|| {
+    let (pubkey, _) =
+        Pubkey::find_program_address(&[b"alpenclock"], &agave_feature_set::alpenglow::id());
+    pubkey
+});
 
 pub type BankStatusCache = StatusCache<Result<()>>;
 #[cfg_attr(
@@ -2052,6 +2061,24 @@ impl Bank {
                 self.inherit_specially_retained_account_fields(account),
             )
         });
+
+        // Update Alpenglow clock
+        let alpenclock_size = bincode::serialized_size(&unix_timestamp_nanos).unwrap();
+        let lamports = Rent::default().minimum_balance(alpenclock_size as usize);
+        let alpenclock_account_data =
+            AccountSharedData::new_data(lamports, &unix_timestamp_nanos, &system_program::ID)
+                .unwrap();
+        self.store_account_and_update_capitalization(
+            &ALPENGLOW_CLOCK_ACCOUNT,
+            &alpenclock_account_data,
+        );
+    }
+
+    pub fn get_alpenglow_clock(&self) -> Option<i64> {
+        self.get_account(&ALPENGLOW_CLOCK_ACCOUNT).map(|acct| {
+            acct.deserialize_data()
+                .expect("Couldn't deserialize Alpenglow clock")
+        })
     }
 
     fn update_clock(&self, parent_epoch: Option<Epoch>) {

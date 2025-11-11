@@ -21,7 +21,9 @@ use {
     },
     solana_measure::measure::Measure,
     solana_poh::{
-        poh_recorder::{PohRecorder, PohRecorderError, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
+        poh_recorder::{
+            PohRecorder, PohRecorderError, WorkingBank, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS,
+        },
         record_channels::RecordReceiver,
     },
     solana_pubkey::Pubkey,
@@ -40,7 +42,7 @@ use {
             Arc, Condvar, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, UNIX_EPOCH},
     },
     thiserror::Error,
 };
@@ -347,17 +349,58 @@ fn produce_window(
     Ok(())
 }
 
+/// Clamps the block producer timestamp to ensure that the leader produces a timestamp that conforms
+/// to Alpenglow clock bounds.
+fn skew_block_producer_time_nanos(
+    parent_slot: Slot,
+    parent_time_nanos: i64,
+    working_bank_slot: Slot,
+    working_bank_time_nanos: i64,
+) -> i64 {
+    let (min_working_bank_time, max_working_bank_time) =
+        BlockComponentProcessor::alpenglow_time_bounds(
+            parent_slot,
+            parent_time_nanos,
+            working_bank_slot,
+        );
+
+    working_bank_time_nanos
+        .max(min_working_bank_time)
+        .min(max_working_bank_time)
+}
+
 /// Produces a block footer with the current timestamp and version information.
 /// The bank_hash field is left as default and will be filled in after the bank freezes.
-fn produce_block_footer(block_producer_start_time: SystemTime) -> BlockFooterV1 {
-    let block_producer_time_nanos = block_producer_start_time
+fn produce_block_footer(working_bank: &WorkingBank) -> BlockFooterV1 {
+    let mut block_producer_time_nanos = working_bank
+        .start
         .duration_since(UNIX_EPOCH)
         .expect("Misconfigured system clock; couldn't measure block producer time.")
-        .as_nanos() as u64;
+        .as_nanos() as i64;
+
+    let working_bank_slot = working_bank.bank.slot();
+
+    if let Some(parent_bank) = working_bank.bank.parent() {
+        // Get parent time from alpenglow clock (nanoseconds) or fall back to clock sysvar (seconds -> nanoseconds)
+        let parent_time_nanos = parent_bank.get_alpenglow_clock().unwrap_or_else(|| {
+            parent_bank
+                .clock()
+                .unix_timestamp
+                .saturating_mul(1_000_000_000)
+        });
+        let parent_slot = parent_bank.slot();
+
+        block_producer_time_nanos = skew_block_producer_time_nanos(
+            parent_slot,
+            parent_time_nanos,
+            working_bank_slot,
+            block_producer_time_nanos,
+        );
+    }
 
     BlockFooterV1 {
         bank_hash: Hash::default(),
-        block_producer_time_nanos,
+        block_producer_time_nanos: block_producer_time_nanos as u64,
         block_user_agent: format!("agave/{}", version!()).into_bytes(),
     }
 }
@@ -425,7 +468,7 @@ fn record_and_complete_block(
 
     // Produce the footer with the current timestamp
     let working_bank = w_poh_recorder.working_bank().unwrap();
-    let footer = produce_block_footer(*working_bank.start);
+    let footer = produce_block_footer(working_bank);
 
     BlockComponentProcessor::update_bank_with_footer(
         working_bank.bank.clone_without_scheduler(),
