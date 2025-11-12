@@ -42,7 +42,7 @@ use {
             Arc, Condvar, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     },
     thiserror::Error,
 };
@@ -358,7 +358,7 @@ fn skew_block_producer_time_nanos(
     working_bank_time_nanos: i64,
 ) -> i64 {
     let (min_working_bank_time, max_working_bank_time) =
-        BlockComponentProcessor::alpenglow_time_bounds(
+        BlockComponentProcessor::nanosecond_time_bounds(
             parent_slot,
             parent_time_nanos,
             working_bank_slot,
@@ -372,8 +372,7 @@ fn skew_block_producer_time_nanos(
 /// Produces a block footer with the current timestamp and version information.
 /// The bank_hash field is left as default and will be filled in after the bank freezes.
 fn produce_block_footer(working_bank: &WorkingBank) -> BlockFooterV1 {
-    let mut block_producer_time_nanos = working_bank
-        .start
+    let mut block_producer_time_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Misconfigured system clock; couldn't measure block producer time.")
         .as_nanos() as i64;
@@ -382,7 +381,7 @@ fn produce_block_footer(working_bank: &WorkingBank) -> BlockFooterV1 {
 
     if let Some(parent_bank) = working_bank.bank.parent() {
         // Get parent time from alpenglow clock (nanoseconds) or fall back to clock sysvar (seconds -> nanoseconds)
-        let parent_time_nanos = parent_bank.get_alpenglow_clock().unwrap_or_else(|| {
+        let parent_time_nanos = parent_bank.get_nanosecond_clock().unwrap_or_else(|| {
             parent_bank
                 .clock()
                 .unix_timestamp

@@ -22,8 +22,8 @@ pub enum BlockComponentProcessorError {
     MultipleBlockHeaders,
     #[error("BlockComponent detected pre-migration")]
     BlockComponentPreMigration,
-    #[error("Alpenglow clock out of bounds")]
-    AlpenglowClockOutOfBounds,
+    #[error("Nanosecond clock out of bounds")]
+    NanosecondClockOutOfBounds,
 }
 
 #[derive(Default)]
@@ -118,7 +118,7 @@ impl BlockComponentProcessor {
             VersionedBlockFooter::V1(footer) | VersionedBlockFooter::Current(footer) => footer,
         };
 
-        Self::enforce_alpenglow_clock_bounds(bank.clone(), parent_bank.clone(), footer)?;
+        Self::enforce_nanosecond_clock_bounds(bank.clone(), parent_bank.clone(), footer)?;
         Self::update_bank_with_footer(bank, footer);
 
         self.has_footer = true;
@@ -137,14 +137,14 @@ impl BlockComponentProcessor {
         Ok(())
     }
 
-    fn enforce_alpenglow_clock_bounds(
+    fn enforce_nanosecond_clock_bounds(
         bank: Arc<Bank>,
         parent_bank: Arc<Bank>,
         footer: &BlockFooterV1,
     ) -> Result<(), BlockComponentProcessorError> {
-        // Get parent time from alpenglow clock account (nanosecond precision)
-        // If alpenglow clock hasn't been populated, don't enforce the bounds.
-        let Some(parent_time_nanos) = parent_bank.get_alpenglow_clock() else {
+        // Get parent time from nanosecond clock account
+        // If nanosecond clock hasn't been populated, don't enforce the bounds.
+        let Some(parent_time_nanos) = parent_bank.get_nanosecond_clock() else {
             return Ok(());
         };
 
@@ -153,28 +153,31 @@ impl BlockComponentProcessor {
         let current_slot = bank.slot();
 
         let (lower_bound_nanos, upper_bound_nanos) =
-            Self::alpenglow_time_bounds(parent_slot, parent_time_nanos, current_slot);
+            Self::nanosecond_time_bounds(parent_slot, parent_time_nanos, current_slot);
 
         let is_valid =
             lower_bound_nanos <= current_time_nanos && current_time_nanos <= upper_bound_nanos;
 
         match is_valid {
             true => Ok(()),
-            false => Err(BlockComponentProcessorError::AlpenglowClockOutOfBounds),
+            false => Err(BlockComponentProcessorError::NanosecondClockOutOfBounds),
         }
     }
 
-    /// Given the parent slot, parent time, and working bank slot, calculate the lower and upper
+    /// Given the parent slot, parent time, and slot, calculate the lower and upper
     /// bounds for the block producer time. We return (lower_bound, upper_bound), where both bounds
     /// are inclusive. I.e., the working bank time is valid if
     /// lower_bound <= working_bank_time <= upper_bound.
-    pub fn alpenglow_time_bounds(
+    ///
+    /// Refer to https://github.com/solana-foundation/solana-improvement-documents/pull/363 for
+    /// details on the bounds calculation.
+    pub fn nanosecond_time_bounds(
         parent_slot: Slot,
         parent_time_nanos: i64,
-        working_bank_slot: Slot,
+        slot: Slot,
     ) -> (i64, i64) {
         let default_ns_per_slot = DEFAULT_MS_PER_SLOT * 1_000_000;
-        let diff_slots = working_bank_slot.saturating_sub(parent_slot);
+        let diff_slots = slot.saturating_sub(parent_slot);
 
         let min_working_bank_time = parent_time_nanos.saturating_add(1);
         let max_working_bank_time =
@@ -628,7 +631,7 @@ mod tests {
         let current_slot = bank.slot();
 
         // Use a timestamp in the middle of the valid range
-        let (lower_bound, upper_bound) = BlockComponentProcessor::alpenglow_time_bounds(
+        let (lower_bound, upper_bound) = BlockComponentProcessor::nanosecond_time_bounds(
             parent_slot,
             parent_time_nanos,
             current_slot,
@@ -665,13 +668,13 @@ mod tests {
         let parent = create_test_bank();
         let parent_time_nanos = parent.clock().unix_timestamp.saturating_mul(1_000_000_000);
 
-        // Set up alpenglow clock on parent so validation doesn't skip bounds checking
+        // Set up clock on parent so validation doesn't skip bounds checking
         parent.update_clock_from_footer(parent_time_nanos);
 
         let bank = create_child_bank(&parent, slot_gap);
 
         let (lower_bound, upper_bound) =
-            BlockComponentProcessor::alpenglow_time_bounds(0, parent_time_nanos, slot_gap);
+            BlockComponentProcessor::nanosecond_time_bounds(0, parent_time_nanos, slot_gap);
 
         let footer_time_nanos = timestamp_fn(parent_time_nanos, lower_bound, upper_bound);
 
@@ -687,7 +690,7 @@ mod tests {
         } else {
             assert_eq!(
                 result,
-                Err(BlockComponentProcessorError::AlpenglowClockOutOfBounds)
+                Err(BlockComponentProcessorError::NanosecondClockOutOfBounds)
             );
         }
     }
@@ -731,15 +734,15 @@ mod tests {
         test_clock_bounds_helper(1, |parent_time, _, _| parent_time, false);
     }
 
-    // Helper function to test alpenglow_time_bounds calculation
-    fn test_alpenglow_time_bounds_helper(
+    // Helper function to test nanosecond_time_bounds calculation
+    fn test_nanosecond_time_bounds_helper(
         parent_slot: u64,
         parent_time_nanos: i64,
         working_slot: u64,
         expected_lower: i64,
         expected_upper: i64,
     ) {
-        let (lower, upper) = BlockComponentProcessor::alpenglow_time_bounds(
+        let (lower, upper) = BlockComponentProcessor::nanosecond_time_bounds(
             parent_slot,
             parent_time_nanos,
             working_slot,
@@ -750,13 +753,13 @@ mod tests {
     }
 
     #[test]
-    fn test_alpenglow_time_bounds_calculation() {
-        // Test the alpenglow_time_bounds function directly
+    fn test_nanosecond_time_bounds_calculation() {
+        // Test the nanosecond_time_bounds function directly
         // diff_slots = 15 - 10 = 5
         // lower = parent_time + 1
         // upper = parent_time + 2 * 5 * 400_000_000 = parent_time + 4_000_000_000
         let parent_time = 1_000_000_000_000; // 1000 seconds in nanos
-        test_alpenglow_time_bounds_helper(
+        test_nanosecond_time_bounds_helper(
             10,
             parent_time,
             15,
@@ -766,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_alpenglow_time_bounds_same_slot() {
+    fn test_nanosecond_time_bounds_same_slot() {
         // Test with same slot (diff = 0)
         // diff_slots = 0
         // lower = parent_time + 1
@@ -774,6 +777,6 @@ mod tests {
         // Note: In this case, lower > upper, so no timestamp would be valid
         // This is expected since we shouldn't have the same slot for parent and working bank
         let parent_time = 1_000_000_000_000;
-        test_alpenglow_time_bounds_helper(10, parent_time, 10, parent_time + 1, parent_time);
+        test_nanosecond_time_bounds_helper(10, parent_time, 10, parent_time + 1, parent_time);
     }
 }

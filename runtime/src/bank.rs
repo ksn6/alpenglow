@@ -218,7 +218,7 @@ pub const MAX_LEADER_SCHEDULE_STAKES: Epoch = 5;
 
 /// The off-curve account where we store the Alpenglow clock. The clock sysvar has seconds
 /// resolution while the Alpenglow clock has nanosecond resolution.
-pub static ALPENGLOW_CLOCK_ACCOUNT: LazyLock<Pubkey> = LazyLock::new(|| {
+static NANOSECOND_CLOCK_ACCOUNT: LazyLock<Pubkey> = LazyLock::new(|| {
     let (pubkey, _) =
         Pubkey::find_program_address(&[b"alpenclock"], &agave_feature_set::alpenglow::id());
     pubkey
@@ -2069,15 +2069,15 @@ impl Bank {
             AccountSharedData::new_data(lamports, &unix_timestamp_nanos, &system_program::ID)
                 .unwrap();
         self.store_account_and_update_capitalization(
-            &ALPENGLOW_CLOCK_ACCOUNT,
+            &NANOSECOND_CLOCK_ACCOUNT,
             &alpenclock_account_data,
         );
     }
 
-    pub fn get_alpenglow_clock(&self) -> Option<i64> {
-        self.get_account(&ALPENGLOW_CLOCK_ACCOUNT).map(|acct| {
+    pub fn get_nanosecond_clock(&self) -> Option<i64> {
+        self.get_account(&NANOSECOND_CLOCK_ACCOUNT).map(|acct| {
             acct.deserialize_data()
-                .expect("Couldn't deserialize Alpenglow clock")
+                .expect("Couldn't deserialize nanosecond resolution clock")
         })
     }
 
