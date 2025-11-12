@@ -11,6 +11,7 @@ use {
     },
     crossbeam_channel::Receiver,
     solana_clock::Slot,
+    solana_entry::block_component::BlockFooterV1,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_ledger::{
@@ -28,7 +29,9 @@ use {
     solana_runtime::{
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
+        block_component_processor::BlockComponentProcessor,
     },
+    solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo},
     stats::{BlockCreationLoopMetrics, SlotMetrics},
     std::{
@@ -37,7 +40,7 @@ use {
             Arc, Condvar, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     },
     thiserror::Error,
 };
@@ -344,6 +347,21 @@ fn produce_window(
     Ok(())
 }
 
+/// Produces a block footer with the current timestamp and version information.
+/// The bank_hash field is left as default and will be filled in after the bank freezes.
+fn produce_block_footer(block_producer_start_time: SystemTime) -> BlockFooterV1 {
+    let block_producer_time_nanos = block_producer_start_time
+        .duration_since(UNIX_EPOCH)
+        .expect("Misconfigured system clock; couldn't measure block producer time.")
+        .as_nanos() as u64;
+
+    BlockFooterV1 {
+        bank_hash: Hash::default(),
+        block_producer_time_nanos,
+        block_user_agent: format!("agave/{}", version!()).into_bytes(),
+    }
+}
+
 /// Records incoming transactions until we reach the block timeout.
 /// Afterwards:
 /// - Shutdown the record receiver
@@ -404,8 +422,18 @@ fn record_and_complete_block(
     // will properly increment the tick_height to max_tick_height.
     bank.set_tick_height(max_tick_height - 1);
     // Write the single tick for this slot
+
+    // Produce the footer with the current timestamp
+    let working_bank = w_poh_recorder.working_bank().unwrap();
+    let footer = produce_block_footer(*working_bank.start);
+
+    BlockComponentProcessor::update_bank_with_footer(
+        working_bank.bank.clone_without_scheduler(),
+        &footer,
+    );
+
     drop(bank);
-    w_poh_recorder.tick_alpenglow(max_tick_height);
+    w_poh_recorder.tick_alpenglow(max_tick_height, footer);
 
     Ok(())
 }

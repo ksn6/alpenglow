@@ -1391,7 +1391,12 @@ impl Bank {
         let (_, update_sysvars_time_us) = measure_us!({
             new.update_slot_hashes();
             new.update_stake_history(Some(parent.epoch()));
-            new.update_clock(Some(parent.epoch()));
+
+            // If Alpenglow is enabled, update the clock from the footer.
+            if new.get_alpenglow_genesis_certificate().is_none() {
+                new.update_clock(Some(parent.epoch()));
+            }
+
             new.update_last_restart_slot()
         });
 
@@ -2019,6 +2024,37 @@ impl Bank {
     pub fn clock(&self) -> sysvar::clock::Clock {
         from_account(&self.get_account(&sysvar::clock::id()).unwrap_or_default())
             .unwrap_or_default()
+    }
+
+    pub fn update_clock_from_footer(&self, unix_timestamp_nanos: i64) {
+        let mut epoch_start_timestamp =
+            // On epoch boundaries, update epoch_start_timestamp
+            if self.parent().is_some() && self.parent().unwrap().epoch() != self.epoch() {
+                unix_timestamp_nanos / 1_000_000_000
+            } else {
+                self.clock().epoch_start_timestamp
+            };
+
+        if self.slot == 0 {
+            epoch_start_timestamp = self.unix_timestamp_from_genesis();
+        }
+
+        // Update clock sysvar
+        // NOTE: block footer UNIX timestamps are in nanoseconds, but clock sysvar stores timestamps
+        // in seconds
+        let clock = sysvar::clock::Clock {
+            slot: self.slot,
+            epoch_start_timestamp,
+            epoch: self.epoch_schedule().get_epoch(self.slot),
+            leader_schedule_epoch: self.epoch_schedule().get_leader_schedule_epoch(self.slot),
+            unix_timestamp: unix_timestamp_nanos / 1_000_000_000,
+        };
+        self.update_sysvar_account(&sysvar::clock::id(), |account| {
+            create_account(
+                &clock,
+                self.inherit_specially_retained_account_fields(account),
+            )
+        });
     }
 
     fn update_clock(&self, parent_epoch: Option<Epoch>) {

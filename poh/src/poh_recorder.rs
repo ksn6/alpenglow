@@ -36,7 +36,6 @@ use {
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, installed_scheduler_pool::BankWithScheduler},
     solana_transaction::versioned::VersionedTransaction,
-    solana_version::version,
     solana_votor_messages::migration::MigrationStatus,
     std::{
         cmp,
@@ -44,7 +43,7 @@ use {
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
         },
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
 };
@@ -350,7 +349,7 @@ impl PohRecorder {
         self.metrics.report_metrics_us += report_metrics_us;
 
         loop {
-            let (flush_cache_res, flush_cache_us) = measure_us!(self.flush_cache(false, false));
+            let (flush_cache_res, flush_cache_us) = measure_us!(self.flush_cache(false, None));
             self.metrics.flush_cache_no_tick_us += flush_cache_us;
             flush_cache_res?;
 
@@ -437,7 +436,7 @@ impl PohRecorder {
                 self.tick_height(),
             ));
 
-            let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true, false));
+            let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true, None));
             self.metrics.flush_cache_tick_us += flush_cache_and_tick_us;
 
             let (_, sleep_us) = measure_us!({
@@ -484,7 +483,7 @@ impl PohRecorder {
 
         // TODO: adjust the working_bank.start time based on number of ticks
         // that have already elapsed based on current tick height.
-        let _ = self.flush_cache(false, false);
+        let _ = self.flush_cache(false, None);
     }
 
     fn clear_bank(&mut self) {
@@ -568,10 +567,67 @@ impl PohRecorder {
         self.start_tick_height = self.tick_height() + 1;
     }
 
+    /// Waits for the bank to freeze and sends the block footer with the bank hash.
+    /// Returns:
+    /// - Ok(()): Footer sent successfully
+    /// - Err(None): Bank freeze timeout (caller should break without updating send_result)
+    /// - Err(Some(e)): Send failed (caller should update send_result and break)
+    fn wait_for_freeze_and_send_footer(
+        &self,
+        footer: &BlockFooterV1,
+        working_bank: &WorkingBank,
+    ) -> std::result::Result<(), Option<SendError<WorkingBankEntryMarker>>> {
+        // Wait for the bank to be frozen with timeout
+        // TODO: change this to use DELTA_BLOCK from votor instead.
+        let start = Instant::now();
+        while !working_bank.bank.is_frozen() {
+            if start.elapsed() > Duration::from_millis(400) {
+                break;
+            }
+            std::hint::spin_loop();
+        }
+
+        // If the bank still isn't frozen, we've timed out
+        if !working_bank.bank.is_frozen() {
+            error!(
+                "slot = {} block production failure. bank freezing timed out.",
+                working_bank.bank.slot()
+            );
+            return Err(None);
+        }
+
+        // Send out the block footer - we now have the bank hash
+        let mut footer = footer.clone();
+        footer.bank_hash = working_bank.bank.hash();
+
+        let footer = VersionedBlockFooter::Current(footer.clone());
+        let footer = BlockMarkerV1::BlockFooter(footer);
+        let footer = VersionedBlockMarker::Current(footer);
+
+        let footer_entry_marker = (
+            EntryMarker::Marker(footer),
+            working_bank.max_tick_height - 1,
+        );
+
+        let send_result = self
+            .working_bank_sender
+            .send((working_bank.bank.clone(), footer_entry_marker));
+
+        if send_result.is_err() {
+            error!(
+                "slot = {} block production failure. failed to broadcast footer",
+                working_bank.bank.slot()
+            );
+            return Err(send_result.err());
+        }
+
+        Ok(())
+    }
+
     // Flush cache will delay flushing the cache for a bank until it past the WorkingBank::min_tick_height
     // On a record flush will flush the cache at the WorkingBank::min_tick_height, since a record
     // occurs after the min_tick_height was generated
-    fn flush_cache(&mut self, tick: bool, is_alpentick: bool) -> Result<()> {
+    fn flush_cache(&mut self, tick: bool, footer: Option<BlockFooterV1>) -> Result<()> {
         // check_tick_height is called before flush cache, so it cannot overrun the bank
         // so a bank that is so late that it's slot fully generated before it starts recording
         // will fail instead of broadcasting any ticks
@@ -605,43 +661,15 @@ impl PohRecorder {
             for (entry, tick_height) in &self.tick_cache[..entry_count] {
                 working_bank.bank.register_tick(&entry.hash);
 
-                if is_alpentick {
-                    // Wait for the bank to be frozen with timeout
-                    // TODO: change this to use DELTA_BLOCK from votor instead.
-                    let start = Instant::now();
-                    while !working_bank.bank.is_frozen() {
-                        if start.elapsed() > Duration::from_millis(400) {
+                if let Some(footer) = footer.as_ref() {
+                    match self.wait_for_freeze_and_send_footer(footer, working_bank) {
+                        Ok(()) => {}        // Continue processing
+                        Err(None) => break, // Timeout - break without updating send_result
+                        Err(Some(e)) => {
+                            // Send failed - update send_result and break
+                            send_result = Err(e);
                             break;
                         }
-                        std::hint::spin_loop();
-                    }
-
-                    // If the bank still isn't frozen, we've timed out
-                    if !working_bank.bank.is_frozen() {
-                        error!(
-                            "slot = {} block production failure. bank freezing timed out.",
-                            working_bank.bank.slot()
-                        );
-                        break;
-                    }
-
-                    // Send out the block footer
-                    let footer = self.produce_block_footer(working_bank);
-                    let footer_entry_marker = (
-                        EntryMarker::Marker(footer),
-                        working_bank.max_tick_height - 1,
-                    );
-
-                    send_result = self
-                        .working_bank_sender
-                        .send((working_bank.bank.clone(), footer_entry_marker));
-
-                    if send_result.is_err() {
-                        error!(
-                            "slot = {} block production failure. failed to broadcast footer",
-                            working_bank.bank.slot()
-                        );
-                        break;
                     }
                 }
 
@@ -977,34 +1005,7 @@ impl PohRecorder {
         self.clear_bank();
     }
 
-    pub fn working_bank_block_producer_time_nanos(&self) -> u64 {
-        self.working_bank()
-            .unwrap()
-            .start
-            .duration_since(UNIX_EPOCH)
-            .expect("Misconfigured system clock; couldn't measure block producer time.")
-            .as_nanos() as u64
-    }
-
-    fn produce_block_footer(&self, working_bank: &WorkingBank) -> VersionedBlockMarker {
-        if !working_bank.bank.is_frozen() {
-            let slot = working_bank.bank.slot();
-            error!("slot = {slot} creating a block footer with a non-frozen bank! ");
-        }
-
-        let footer = BlockFooterV1 {
-            bank_hash: working_bank.bank.hash(),
-            block_producer_time_nanos: self.working_bank_block_producer_time_nanos(),
-            block_user_agent: format!("agave/{}", version!()).into_bytes(),
-        };
-
-        let footer = VersionedBlockFooter::Current(footer);
-        let footer = BlockMarkerV1::BlockFooter(footer);
-
-        VersionedBlockMarker::Current(footer)
-    }
-
-    pub fn tick_alpenglow(&mut self, slot_max_tick_height: u64) {
+    pub fn tick_alpenglow(&mut self, slot_max_tick_height: u64, footer: BlockFooterV1) {
         let (poh_entry, tick_lock_contention_us) = measure_us!({
             let mut poh_l = self.poh.lock().unwrap();
             poh_l.tick()
@@ -1027,7 +1028,8 @@ impl PohRecorder {
                 self.tick_height.load(),
             ));
 
-            let (_flush_res, flush_cache_and_tick_us) = measure_us!(self.flush_cache(true, true));
+            let (_flush_res, flush_cache_and_tick_us) =
+                measure_us!(self.flush_cache(true, Some(footer)));
             self.metrics.flush_cache_tick_us += flush_cache_and_tick_us;
         }
     }
