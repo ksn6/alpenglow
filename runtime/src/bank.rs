@@ -2027,17 +2027,14 @@ impl Bank {
     }
 
     pub fn update_clock_from_footer(&self, unix_timestamp_nanos: i64) {
-        let mut epoch_start_timestamp =
-            // On epoch boundaries, update epoch_start_timestamp
-            if self.parent().is_some() && self.parent().unwrap().epoch() != self.epoch() {
+        // On epoch boundaries, update epoch_start_timestamp
+        let epoch_start_timestamp = match (self.slot, self.parent()) {
+            (0, _) => self.unix_timestamp_from_genesis(),
+            (_, Some(parent)) if parent.epoch() != self.epoch() => {
                 unix_timestamp_nanos / 1_000_000_000
-            } else {
-                self.clock().epoch_start_timestamp
-            };
-
-        if self.slot == 0 {
-            epoch_start_timestamp = self.unix_timestamp_from_genesis();
-        }
+            }
+            _ => self.clock().epoch_start_timestamp,
+        };
 
         // Update clock sysvar
         // NOTE: block footer UNIX timestamps are in nanoseconds, but clock sysvar stores timestamps
