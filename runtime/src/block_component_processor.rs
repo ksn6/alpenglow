@@ -143,7 +143,8 @@ impl BlockComponentProcessor {
         footer: &BlockFooterV1,
     ) -> Result<(), BlockComponentProcessorError> {
         // Get parent time from nanosecond clock account
-        // If nanosecond clock hasn't been populated, don't enforce the bounds.
+        // If nanosecond clock hasn't been populated, don't enforce the bounds; note that the
+        // nanosecond clock is populated as soon as Alpenglow migration is complete.
         let Some(parent_time_nanos) = parent_bank.get_nanosecond_clock() else {
             return Ok(());
         };
