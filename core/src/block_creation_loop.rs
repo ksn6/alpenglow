@@ -347,17 +347,54 @@ fn produce_window(
     Ok(())
 }
 
+/// Clamps the block producer timestamp to ensure that the leader produces a timestamp that conforms
+/// to Alpenglow clock bounds.
+fn skew_block_producer_time_nanos(
+    parent_slot: Slot,
+    parent_time_nanos: i64,
+    working_bank_slot: Slot,
+    working_bank_time_nanos: i64,
+) -> i64 {
+    let (min_working_bank_time, max_working_bank_time) =
+        BlockComponentProcessor::nanosecond_time_bounds(
+            parent_slot,
+            parent_time_nanos,
+            working_bank_slot,
+        );
+
+    working_bank_time_nanos
+        .max(min_working_bank_time)
+        .min(max_working_bank_time)
+}
+
 /// Produces a block footer with the current timestamp and version information.
 /// The bank_hash field is left as default and will be filled in after the bank freezes.
-fn produce_block_footer(block_producer_start_time: SystemTime) -> BlockFooterV1 {
-    let block_producer_time_nanos = block_producer_start_time
+fn produce_block_footer(bank: Arc<Bank>) -> BlockFooterV1 {
+    let mut block_producer_time_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Misconfigured system clock; couldn't measure block producer time.")
-        .as_nanos() as u64;
+        .as_nanos() as i64;
+
+    let slot = bank.slot();
+
+    if let Some(parent_bank) = bank.parent() {
+        // Get parent time from alpenglow clock (nanoseconds) or fall back to clock sysvar (seconds -> nanoseconds)
+        let parent_time_nanos = bank
+            .get_nanosecond_clock()
+            .unwrap_or_else(|| bank.clock().unix_timestamp.saturating_mul(1_000_000_000));
+        let parent_slot = parent_bank.slot();
+
+        block_producer_time_nanos = skew_block_producer_time_nanos(
+            parent_slot,
+            parent_time_nanos,
+            slot,
+            block_producer_time_nanos,
+        );
+    }
 
     BlockFooterV1 {
         bank_hash: Hash::default(),
-        block_producer_time_nanos,
+        block_producer_time_nanos: block_producer_time_nanos as u64,
         block_user_agent: format!("agave/{}", version!()).into_bytes(),
     }
 }
@@ -425,7 +462,7 @@ fn record_and_complete_block(
 
     // Produce the footer with the current timestamp
     let working_bank = w_poh_recorder.working_bank().unwrap();
-    let footer = produce_block_footer(*working_bank.start);
+    let footer = produce_block_footer(working_bank.bank.clone_without_scheduler());
 
     BlockComponentProcessor::update_bank_with_footer(
         working_bank.bank.clone_without_scheduler(),
