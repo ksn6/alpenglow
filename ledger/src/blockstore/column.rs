@@ -1072,38 +1072,33 @@ impl TypedColumn for columns::AlternateMerkleRootMeta {
 
 impl Column for columns::ParentMeta {
     type Index = (Slot, BlockLocation);
-    // Key size: Slot (8 bytes) + discriminator (1 byte) + optional Hash (32 bytes)
-    // Maximum size when BlockLocation::Alternate
-    type Key = [u8; std::mem::size_of::<Slot>() + 1 + HASH_BYTES];
+    // Key size: Slot (8 bytes) + Hash (32 bytes)
+    // When BlockLocation::Original, the hash is Hash::default().
+    type Key = [u8; std::mem::size_of::<Slot>() + HASH_BYTES];
 
     #[inline]
     fn key((slot, location): &Self::Index) -> Self::Key {
-        let mut key = [0u8; std::mem::size_of::<Slot>() + 1 + HASH_BYTES];
+        let mut key = [0u8; std::mem::size_of::<Slot>() + HASH_BYTES];
         key[..8].copy_from_slice(&slot.to_le_bytes());
 
-        match location {
-            BlockLocation::Original => {
-                key[8] = 0; // discriminator for Original
-                            // Rest of the key remains zeros
-            }
-            BlockLocation::Alternate { block_id } => {
-                key[8] = 1; // discriminator for Alternate
-                key[9..41].copy_from_slice(&block_id.to_bytes());
-            }
-        }
+        let hash_bytes = match location {
+            BlockLocation::Original => &Hash::default().to_bytes(),
+            BlockLocation::Alternate { block_id } => &block_id.to_bytes(),
+        };
+
+        key[8..40].copy_from_slice(hash_bytes);
+
         key
     }
 
     fn index(key: &[u8]) -> Self::Index {
         let slot = Slot::from_le_bytes(key[0..8].try_into().unwrap());
-        let location = match key[8] {
-            0 => BlockLocation::Original,
-            1 => {
-                let block_id = Hash::new_from_array(key[9..41].try_into().unwrap());
-                BlockLocation::Alternate { block_id }
-            }
-            _ => panic!("Invalid BlockLocation discriminator"),
+        let hash = Hash::new_from_array(key[8..40].try_into().unwrap());
+        let location = match hash == Hash::default() {
+            true => BlockLocation::Original,
+            false => BlockLocation::Alternate { block_id: hash },
         };
+
         (slot, location)
     }
 
