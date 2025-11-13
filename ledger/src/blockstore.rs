@@ -1951,33 +1951,31 @@ impl Blockstore {
         }
     }
 
-    fn check_for_block_header(
+    fn maybe_insert_parent_meta(
         &self,
         current_shred: &Shred,
         slot: Slot,
         location: BlockLocation,
         parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
-    ) -> Option<ParentMeta> {
-        let current_index = current_shred.index();
-
+    ) {
         // The contents of BlockHeaderV1 entirely fit into a single shred. So, let's just parse the
         // first shred.
-        if current_index != 0 {
-            return None;
-        }
-
         let shred_bytes = current_shred.payload();
         let Ok(payload) = shred::layout::get_data(shred_bytes) else {
-            return None;
+            return;
         };
 
         // Check whether this is a BlockMarker
         if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
-            return None;
+            return;
         }
 
         // Try to parse BlockHeader from the payload
-        let (parent_slot, parent_block_id) = Self::parse_block_header_from_data_payload(payload)?;
+        let Some((parent_slot, parent_block_id)) =
+            Self::parse_block_header_from_data_payload(payload)
+        else {
+            return;
+        };
 
         let parent_meta = ParentMeta {
             parent_slot,
@@ -1988,8 +1986,6 @@ impl Blockstore {
         parent_meta_working_set
             .entry((location, slot))
             .or_insert(WorkingEntry::Dirty(parent_meta));
-
-        Some(parent_meta)
     }
 
     /// Create an entry to the specified `write_batch` that performs shred
@@ -2044,7 +2040,9 @@ impl Blockstore {
         } = shred_insertion_tracker;
 
         // Check for block header
-        let _ = self.check_for_block_header(&shred, slot, location, parent_meta_working_set);
+        if shred.index() == 0 {
+            self.maybe_insert_parent_meta(&shred, slot, location, parent_meta_working_set);
+        }
 
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);

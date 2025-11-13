@@ -280,6 +280,13 @@ pub mod columns {
     pub struct SlotCertificates;
 
     #[derive(Debug)]
+    /// The parent metadata column
+    ///
+    /// This column stores metadata about parent blocks for each slot and block location. We update
+    /// this column on receiving BlockHeader and UpdateParent BlockComponents.
+    ///
+    /// * index type: `(Slot, BlockLocation)`
+    /// * value type: [`blockstore_meta::ParentMeta`]
     pub struct ParentMeta;
 }
 

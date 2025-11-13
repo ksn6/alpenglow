@@ -3533,51 +3533,6 @@ impl ReplayStage {
             });
     }
 
-    /// Verifies parent meta consistency based on migration status.
-    /// Returns `true` if the checks pass and processing should continue.
-    /// Returns `false` if the slot should be marked dead and processing should stop.
-    fn parent_meta_checks(
-        bank_slot: Slot,
-        blockstore: &Blockstore,
-        migration_status: &MigrationStatus,
-        bank: &Bank,
-    ) -> Result<(), BlockstoreProcessorError> {
-        let Some(parent_bank) = bank.parent() else {
-            return Ok(());
-        };
-
-        let Some(parent_block_id) = parent_bank.block_id() else {
-            return Ok(());
-        };
-
-        let parent_meta_result = blockstore.get_parent_meta(bank_slot, None)?;
-        let is_alpenglow_enabled = migration_status.is_alpenglow_enabled();
-
-        if !is_alpenglow_enabled {
-            if parent_meta_result.is_some() {
-                return Err(
-                    BlockstoreProcessorError::BlockHeaderFoundInPreAlpenglowMigration(bank_slot),
-                );
-            }
-            return Ok(());
-        }
-
-        // Alpenglow is enabled - parent meta must exist and match
-        let Some(parent_meta) = parent_meta_result else {
-            return Err(BlockstoreProcessorError::BlockHeaderNotFound(bank_slot));
-        };
-
-        if parent_meta.parent_slot != parent_bank.slot()
-            || parent_meta.parent_block_id != parent_block_id
-        {
-            return Err(BlockstoreProcessorError::BlockHeaderParentMismatch(
-                bank_slot,
-            ));
-        }
-
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn process_replay_results(
         blockstore: &Blockstore,
@@ -3741,29 +3696,6 @@ impl ReplayStage {
                     ("slot", bank_slot, i64),
                     ("hash", bank.hash().to_string(), String),
                 );
-
-                // Verify parent meta consistency based on migration status
-                if !is_leader_block {
-                    if let Err(err) =
-                        Self::parent_meta_checks(bank_slot, blockstore, migration_status, bank)
-                    {
-                        let root = bank_forks.read().unwrap().root();
-                        Self::mark_dead_slot(
-                            blockstore,
-                            bank,
-                            root,
-                            &err,
-                            rpc_subscriptions,
-                            slot_status_notifier,
-                            progress,
-                            duplicate_slots_to_repair,
-                            ancestor_hashes_replay_update_sender,
-                            purge_repair_slot_counter,
-                            &mut tbft_structs,
-                        );
-                        continue;
-                    }
-                }
 
                 if let Some(transaction_status_sender) = transaction_status_sender {
                     transaction_status_sender.send_transaction_status_freeze_message(bank);
