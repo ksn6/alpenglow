@@ -21,9 +21,7 @@ use {
     },
     solana_measure::measure::Measure,
     solana_poh::{
-        poh_recorder::{
-            PohRecorder, PohRecorderError, WorkingBank, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS,
-        },
+        poh_recorder::{PohRecorder, PohRecorderError, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
         record_channels::RecordReceiver,
     },
     solana_pubkey::Pubkey,
@@ -371,29 +369,25 @@ fn skew_block_producer_time_nanos(
 
 /// Produces a block footer with the current timestamp and version information.
 /// The bank_hash field is left as default and will be filled in after the bank freezes.
-fn produce_block_footer(working_bank: &WorkingBank) -> BlockFooterV1 {
+fn produce_block_footer(bank: Arc<Bank>) -> BlockFooterV1 {
     let mut block_producer_time_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Misconfigured system clock; couldn't measure block producer time.")
         .as_nanos() as i64;
 
-    let working_bank_slot = working_bank.bank.slot();
+    let slot = bank.slot();
 
-    if let Some(parent_bank) = working_bank.bank.parent() {
+    if let Some(parent_bank) = bank.parent() {
         // Get parent time from alpenglow clock (nanoseconds) or fall back to clock sysvar (seconds -> nanoseconds)
-        let parent_time_nanos = working_bank.bank.get_nanosecond_clock().unwrap_or_else(|| {
-            working_bank
-                .bank
-                .clock()
-                .unix_timestamp
-                .saturating_mul(1_000_000_000)
-        });
+        let parent_time_nanos = bank
+            .get_nanosecond_clock()
+            .unwrap_or_else(|| bank.clock().unix_timestamp.saturating_mul(1_000_000_000));
         let parent_slot = parent_bank.slot();
 
         block_producer_time_nanos = skew_block_producer_time_nanos(
             parent_slot,
             parent_time_nanos,
-            working_bank_slot,
+            slot,
             block_producer_time_nanos,
         );
     }
@@ -468,7 +462,7 @@ fn record_and_complete_block(
 
     // Produce the footer with the current timestamp
     let working_bank = w_poh_recorder.working_bank().unwrap();
-    let footer = produce_block_footer(working_bank);
+    let footer = produce_block_footer(working_bank.bank.clone_without_scheduler());
 
     BlockComponentProcessor::update_bank_with_footer(
         working_bank.bank.clone_without_scheduler(),
