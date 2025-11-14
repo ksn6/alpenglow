@@ -2018,7 +2018,7 @@ impl Blockstore {
             return;
         };
 
-        // Check if this is a BlockMarker
+        // Check whether this is a BlockMarker
         if !BlockComponent::infer_is_block_marker(payload).unwrap_or(false) {
             return;
         }
@@ -2229,9 +2229,7 @@ impl Blockstore {
         parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
     ) {
         match parent_meta_working_set.get(&(location, slot)) {
-            Some(WorkingEntry::Dirty(parent_meta))
-                if !parent_meta.populated_from_update_parent() =>
-            {
+            Some(WorkingEntry::Dirty(parent_meta)) if parent_meta.populated_from_block_header() => {
                 // If a parent meta exists, update it only if it was populated from the block header
                 self.maybe_insert_update_parent(
                     shred,
