@@ -1981,9 +1981,9 @@ impl Blockstore {
             // Check the 0th shred in the NEXT FEC set for UpdateParent
             let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
             let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
-            let payload =
+            let shred_bytes =
                 self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location);
-            (payload, next_fec_set_index)
+            (shred_bytes, next_fec_set_index)
         } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 && current_index > 0 {
             // Case (b): Current shred has DATA_COMPLETE=false
             // Check if the PREVIOUS shred had DATA_COMPLETE=true
@@ -2006,7 +2006,7 @@ impl Blockstore {
 
             (shred_bytes, fec_set_index)
         } else {
-            (None, fec_set_index)
+            return;
         };
 
         // Process the shred bytes if we have them
