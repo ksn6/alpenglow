@@ -1391,47 +1391,11 @@ impl Blockstore {
                 continue;
             }
 
-            let key = (slot, location);
-
-            let WorkingEntry::Dirty(new_parent_meta) = working_parent_meta else {
-                continue;
-            };
-
-            let Some(old_parent_meta) = self.parent_meta_cf.get(key)? else {
-                self.parent_meta_cf.put_in_batch(
-                    &mut shred_insertion_tracker.write_batch,
-                    key,
-                    working_parent_meta.as_ref(),
-                )?;
-
-                continue;
-            };
-
-            let old_is_update_parent = old_parent_meta.populated_from_update_parent();
-            let new_is_update_parent = new_parent_meta.populated_from_update_parent();
-
-            match (old_is_update_parent, new_is_update_parent) {
-                (true, true) if old_parent_meta != *new_parent_meta => {
-                    self.set_dead_slot(slot)?;
-                    return Err(BlockstoreError::MultipleUpdateParents(slot));
-                }
-                (false, false) if old_parent_meta != *new_parent_meta => {
-                    self.set_dead_slot(slot)?;
-                    return Err(BlockstoreError::MultipleBlockHeaders(slot));
-                }
-                (false, true) => {
-                    // If the new parent meta is associated with an UpdateParent and the old
-                    // parent meta is associated with a BlockHeader, then update.
-                    self.parent_meta_cf.put_in_batch(
-                        &mut shred_insertion_tracker.write_batch,
-                        key,
-                        working_parent_meta.as_ref(),
-                    )?;
-                }
-                // Nothing to do in other cases - in particular, if an update parent occurs before
-                // a block header, then don't update parent meta.
-                _ => {}
-            }
+            self.parent_meta_cf.put_in_batch(
+                &mut shred_insertion_tracker.write_batch,
+                (slot, location),
+                working_parent_meta.as_ref(),
+            )?;
         }
 
         for (&(location, slot), index_working_set_entry) in
@@ -2074,9 +2038,7 @@ impl Blockstore {
         };
 
         // Store the UpdateParent metadata
-        parent_meta_working_set
-            .entry((location, slot))
-            .or_insert(WorkingEntry::Dirty(parent_meta));
+        parent_meta_working_set.insert((location, slot), WorkingEntry::Dirty(parent_meta));
     }
 
     /// Create an entry to the specified `write_batch` that performs shred
@@ -2227,16 +2189,10 @@ impl Blockstore {
             shred_source,
         )?;
 
-        // Check for block header
-        if shred.index() == 0 {
-            self.maybe_insert_parent_meta(&shred, slot, location, parent_meta_working_set);
-        }
-
-        // Check for update parent
-        self.maybe_insert_update_parent(
+        self.maybe_update_parent_meta(
             &shred,
-            slot,
             location,
+            slot,
             just_inserted_shreds,
             parent_meta_working_set,
         );
@@ -2262,6 +2218,45 @@ impl Blockstore {
         }
 
         Ok(())
+    }
+
+    fn maybe_update_parent_meta(
+        &self,
+        shred: &Shred,
+        location: BlockLocation,
+        slot: u64,
+        just_inserted_shreds: &mut HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
+        parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
+    ) {
+        match parent_meta_working_set.get(&(location, slot)) {
+            Some(WorkingEntry::Dirty(parent_meta))
+                if !parent_meta.populated_from_update_parent() =>
+            {
+                // If a parent meta exists, update it only if it was populated from the block header
+                self.maybe_insert_update_parent(
+                    shred,
+                    slot,
+                    location,
+                    just_inserted_shreds,
+                    parent_meta_working_set,
+                );
+            }
+            None if shred.index() == 0 => {
+                // This is a new parent meta - if we're at shred 0, then this must be the block header.
+                self.maybe_insert_parent_meta(shred, slot, location, parent_meta_working_set);
+            }
+            None => {
+                // This is a new parent meta, where we're not at shred 0 - this may be an UpdateParent.
+                self.maybe_insert_update_parent(
+                    shred,
+                    slot,
+                    location,
+                    just_inserted_shreds,
+                    parent_meta_working_set,
+                );
+            }
+            _ => {}
+        }
     }
 
     fn should_insert_coding_shred(shred: &Shred, max_root: Slot) -> bool {
