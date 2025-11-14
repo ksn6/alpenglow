@@ -2182,20 +2182,6 @@ impl Blockstore {
             newly_completed_data_sets,
         } = shred_insertion_tracker;
 
-        // Check for block header
-        if shred.index() == 0 {
-            self.maybe_insert_parent_meta(&shred, slot, location, parent_meta_working_set);
-        }
-
-        // Check for update parent
-        self.maybe_insert_update_parent(
-            &shred,
-            slot,
-            location,
-            just_inserted_shreds,
-            parent_meta_working_set,
-        );
-
         let index_meta_working_set_entry =
             self.get_index_meta_entry(slot, location, index_working_set, index_meta_time_us);
         let index_meta = &mut index_meta_working_set_entry.index;
@@ -2292,6 +2278,21 @@ impl Blockstore {
             write_batch,
             shred_source,
         )?;
+
+        // Check for block header
+        if shred.index() == 0 {
+            self.maybe_insert_parent_meta(&shred, slot, location, parent_meta_working_set);
+        }
+
+        // Check for update parent
+        self.maybe_insert_update_parent(
+            &shred,
+            slot,
+            location,
+            just_inserted_shreds,
+            parent_meta_working_set,
+        );
+
         if matches!(location, BlockLocation::Original) {
             // We don't currently notify RPC when we complete data sets in alternate columns. This can be extended in the future
             // if necessary.
@@ -2311,6 +2312,7 @@ impl Blockstore {
                 entry.insert(WorkingEntry::Clean(meta));
             }
         }
+
         Ok(())
     }
 
