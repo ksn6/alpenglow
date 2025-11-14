@@ -2073,10 +2073,6 @@ impl Blockstore {
             replay_fec_set_index: target_fec_set_index,
         };
 
-        // DEBUG
-        println!("UpdateParent: {:?}", parent_meta);
-        // END DEBUG
-
         // Store the UpdateParent metadata
         parent_meta_working_set
             .entry((location, slot))
