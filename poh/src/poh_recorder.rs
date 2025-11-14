@@ -12,6 +12,7 @@
 //!
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_entry::block_component::{UpdateParentV1, VersionedUpdateParent};
 use {
     crate::{
         poh_controller::PohController, poh_service::PohService, record_channels::record_channels,
@@ -612,6 +613,26 @@ impl PohRecorder {
         let send_result = self
             .working_bank_sender
             .send((working_bank.bank.clone(), footer_entry_marker));
+
+        // DEBUG
+        let update_parent = UpdateParentV1 {
+            new_parent_slot: 1337,
+            new_parent_block_id: Hash::new_unique(),
+        };
+        let update_parent = VersionedUpdateParent::Current(update_parent);
+        let update_parent = BlockMarkerV1::UpdateParent(update_parent);
+        let update_parent = VersionedBlockMarker::Current(update_parent);
+
+        let update_parent_entry_marker = (
+            EntryMarker::Marker(update_parent),
+            working_bank.max_tick_height - 1,
+        );
+
+        self.working_bank_sender
+            .send((working_bank.bank.clone(), update_parent_entry_marker))
+            .unwrap();
+
+        // END DEBUG
 
         if send_result.is_err() {
             error!(

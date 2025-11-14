@@ -39,10 +39,7 @@ use {
     solana_address_lookup_table_interface::state::AddressLookupTable,
     solana_clock::{Slot, UnixTimestamp, DEFAULT_TICKS_PER_SECOND},
     solana_entry::{
-        block_component::{
-            BlockComponent, BlockMarkerV1, VersionedBlockHeader, VersionedBlockMarker,
-            VersionedUpdateParent,
-        },
+        block_component::BlockComponent,
         entry::{create_ticks, Entry},
     },
     solana_genesis_config::{GenesisConfig, DEFAULT_GENESIS_ARCHIVE, DEFAULT_GENESIS_FILE},
@@ -1963,29 +1960,6 @@ impl Blockstore {
         None
     }
 
-    /// Parse BlockHeader from data shred payload
-    fn parse_block_header_from_data_payload(data: &[u8]) -> Option<(Slot, Hash)> {
-        // Try to deserialize as BlockComponent
-        let (component, _) = BlockComponent::from_bytes(data).ok()?;
-
-        // If we were able to parse the component, it must be a block marker
-        let marker = component.as_marker()?;
-
-        // Check if it's a BlockMarker with BlockHeader
-        match marker {
-            VersionedBlockMarker::V1(BlockMarkerV1::BlockHeader(header))
-            | VersionedBlockMarker::Current(BlockMarkerV1::BlockHeader(header)) => {
-                // Extract the BlockHeader from the versioned wrapper
-                match header {
-                    VersionedBlockHeader::V1(update) | VersionedBlockHeader::Current(update) => {
-                        Some((update.parent_slot, update.parent_block_id))
-                    }
-                }
-            }
-            _ => None,
-        }
-    }
-
     fn maybe_insert_parent_meta(
         &self,
         current_shred: &Shred,
@@ -2007,7 +1981,7 @@ impl Blockstore {
 
         // Try to parse BlockHeader from the payload
         let Some((parent_slot, parent_block_id)) =
-            Self::parse_block_header_from_data_payload(payload)
+            BlockComponent::parse_block_header_from_data_payload(payload)
         else {
             return;
         };
@@ -2021,26 +1995,6 @@ impl Blockstore {
         parent_meta_working_set
             .entry((location, slot))
             .or_insert(WorkingEntry::Dirty(parent_meta));
-    }
-
-    /// Parse UpdateParent from data shred payload
-    fn parse_update_parent_from_data_payload(data: &[u8]) -> Option<(Slot, Hash)> {
-        // Try to deserialize as BlockComponent
-        let (component, _) = BlockComponent::from_bytes(data).ok()?;
-
-        // Check if it's a BlockMarker with UpdateParent
-        match component.as_marker()? {
-            VersionedBlockMarker::V1(BlockMarkerV1::UpdateParent(versioned_update))
-            | VersionedBlockMarker::Current(BlockMarkerV1::UpdateParent(versioned_update)) => {
-                // Extract the UpdateParentV1 from the versioned wrapper
-                match versioned_update {
-                    VersionedUpdateParent::V1(update) | VersionedUpdateParent::Current(update) => {
-                        Some((update.new_parent_slot, update.new_parent_block_id))
-                    }
-                }
-            }
-            _ => None,
-        }
     }
 
     fn maybe_insert_update_parent(
@@ -2063,36 +2017,30 @@ impl Blockstore {
             // Check the 0th shred in the NEXT FEC set for UpdateParent
             let next_fec_set_index = fec_set_index + DATA_SHREDS_PER_FEC_BLOCK as u32;
             let shred_id = ShredId::new(slot, next_fec_set_index, ShredType::Data);
-
-            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
-            {
-                Some(payload) => (Some(payload), next_fec_set_index),
-                None => (None, next_fec_set_index),
-            }
+            let payload =
+                self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location);
+            (payload, next_fec_set_index)
         } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 && current_index > 0 {
             // Case (b): Current shred has DATA_COMPLETE=false
             // Check if the PREVIOUS shred had DATA_COMPLETE=true
             let prev_shred_index = current_index - 1;
             let shred_id = ShredId::new(slot, prev_shred_index, ShredType::Data);
 
-            match self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location)
-            {
-                Some(prev_payload) => {
+            let prev_payload =
+                self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location);
+
+            let shred_bytes = prev_payload
+                .and_then(|prev| {
                     // Use get_flags to check DATA_COMPLETE without full deserialization
-                    if let Ok(flags) = shred::wire::get_flags(&prev_payload) {
-                        if flags.contains(ShredFlags::DATA_COMPLETE_SHRED) {
-                            // Previous shred was end of FEC set, current might have UpdateParent
-                            (Some(Cow::Borrowed(current_shred.payload())), fec_set_index)
-                            // (Some(current_shred.bytes_to_store().to_vec()), fec_set_index)
-                        } else {
-                            (None, fec_set_index)
-                        }
-                    } else {
-                        (None, fec_set_index)
-                    }
-                }
-                _ => (None, fec_set_index),
-            }
+                    shred::wire::get_flags(&prev).ok()
+                })
+                .and_then(|flags| {
+                    flags
+                        .contains(ShredFlags::DATA_COMPLETE_SHRED)
+                        .then(|| Cow::Borrowed(current_shred.payload()))
+                });
+
+            (shred_bytes, fec_set_index)
         } else {
             (None, fec_set_index)
         };
@@ -2102,7 +2050,7 @@ impl Blockstore {
             return;
         };
 
-        let Ok(payload) = shred::layout::get_data(&shred_bytes) else {
+        let Ok(payload) = shred::wire::get_data(&shred_bytes) else {
             return;
         };
 
@@ -2113,7 +2061,7 @@ impl Blockstore {
 
         // Try to parse UpdateParent from the payload
         let Some((new_parent_slot, new_parent_block_id)) =
-            Self::parse_update_parent_from_data_payload(payload)
+            BlockComponent::parse_update_parent_from_data_payload(payload)
         else {
             return;
         };
@@ -2124,6 +2072,10 @@ impl Blockstore {
             parent_block_id: new_parent_block_id,
             replay_fec_set_index: target_fec_set_index,
         };
+
+        // DEBUG
+        println!("UpdateParent: {:?}", parent_meta);
+        // END DEBUG
 
         // Store the UpdateParent metadata
         parent_meta_working_set
