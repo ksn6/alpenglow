@@ -1415,12 +1415,20 @@ impl Blockstore {
 
             match (old_is_update_parent, new_is_update_parent) {
                 (true, true) => {
-                    self.set_dead_slot(slot)?;
-                    return Err(BlockstoreError::MultipleUpdateParents(slot));
+                    // Multiple UpdateParent components - only error if they're different
+                    if old_parent_meta != *new_parent_meta {
+                        self.set_dead_slot(slot)?;
+                        return Err(BlockstoreError::MultipleUpdateParents(slot));
+                    }
+                    // Otherwise, it's a duplicate - skip
                 }
                 (false, false) => {
-                    self.set_dead_slot(slot)?;
-                    return Err(BlockstoreError::MultipleBlockHeaders(slot));
+                    // Multiple BlockHeader components - only error if they're different
+                    if old_parent_meta != *new_parent_meta {
+                        self.set_dead_slot(slot)?;
+                        return Err(BlockstoreError::MultipleBlockHeaders(slot));
+                    }
+                    // Otherwise, it's a duplicate - skip
                 }
                 (false, true) => {
                     // If the new parent meta is associated with an UpdateParent and the old
