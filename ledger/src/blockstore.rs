@@ -1962,7 +1962,7 @@ impl Blockstore {
         // The contents of BlockHeaderV1 entirely fit into a single shred. So, let's just parse the
         // first shred.
         let shred_bytes = current_shred.payload();
-        let Ok(payload) = shred::layout::get_data(shred_bytes) else {
+        let Ok(payload) = shred::wire::get_data(shred_bytes) else {
             return;
         };
 
