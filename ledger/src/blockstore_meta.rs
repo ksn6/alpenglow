@@ -990,6 +990,10 @@ impl ParentMeta {
     pub fn populated_from_block_header(&self) -> bool {
         self.replay_fec_set_index == 0
     }
+
+    pub fn populated_from_update_parent(&self) -> bool {
+        self.replay_fec_set_index > 0
+    }
 }
 
 #[cfg(test)]
