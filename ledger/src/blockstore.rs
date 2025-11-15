@@ -308,9 +308,29 @@ pub struct SlotMetaWorkingSetEntry {
     did_insert_occur: bool,
 }
 
+/// Cache entry for tracking parent meta state during shred insertion.
+///
+/// This structure combines two pieces of information:
+/// 1. The current parent meta value (if any) - either loaded from blockstore (Clean)
+///    or newly inserted/modified during this batch (Dirty)
+/// 2. Whether we've already checked the blockstore for this key
+///
+/// The `hit_blockstore` flag ensures we only read from the blockstore once per key.
+/// Once set to true, all subsequent accesses use the cached `parent_meta` value
+/// (which may be None if the blockstore had no entry).
+///
+/// States:
+/// - `{ parent_meta: None, hit_blockstore: false }` - Not yet checked blockstore
+/// - `{ parent_meta: None, hit_blockstore: true }` - Checked blockstore, was empty
+/// - `{ parent_meta: Some(Clean(meta)), hit_blockstore: true }` - Loaded from blockstore
+/// - `{ parent_meta: Some(Dirty(meta)), hit_blockstore: true }` - Modified in this batch
 #[derive(Default)]
 struct ParentMetaWorkingSetEntry {
+    /// The parent meta value: None if blockstore was empty, Some(Clean) if loaded
+    /// from blockstore unchanged, or Some(Dirty) if inserted/modified in this batch
     parent_meta: Option<WorkingEntry<ParentMeta>>,
+    /// Whether we've already loaded this key from the blockstore. Once true, we use
+    /// the cached `parent_meta` value instead of hitting the blockstore again.
     hit_blockstore: bool,
 }
 
@@ -2239,7 +2259,6 @@ impl Blockstore {
         parent_meta_working_set: &mut HashMap<(BlockLocation, u64), ParentMetaWorkingSetEntry>,
     ) -> Result<()> {
         let key = (location, slot);
-
         let entry = parent_meta_working_set.entry(key).or_default();
 
         // If the working set ParentMeta exists and has an UpdateParent, then return early
