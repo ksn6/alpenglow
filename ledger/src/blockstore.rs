@@ -1985,7 +1985,7 @@ impl Blockstore {
                 self.get_shred_from_just_inserted_or_db(just_inserted_shreds, shred_id, location);
             (shred_bytes, next_fec_set_index)
         } else if current_index % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 && current_index > 0 {
-            // Case (b): Current shred has DATA_COMPLETE=false
+            // Case (b): Current shred is the 0th shred of the FEC set
             // Check if the PREVIOUS shred had DATA_COMPLETE=true
             let prev_shred_index = current_index - 1;
             let shred_id = ShredId::new(slot, prev_shred_index, ShredType::Data);
@@ -2189,13 +2189,15 @@ impl Blockstore {
             shred_source,
         )?;
 
-        self.maybe_update_parent_meta(
-            &shred,
-            location,
-            slot,
-            just_inserted_shreds,
-            parent_meta_working_set,
-        );
+        if shred.index() % DATA_SHREDS_PER_FEC_BLOCK as u32 == 0 || shred.data_complete() {
+            self.maybe_update_parent_meta(
+                &shred,
+                location,
+                slot,
+                just_inserted_shreds,
+                parent_meta_working_set,
+            )?;
+        }
 
         if matches!(location, BlockLocation::Original) {
             // We don't currently notify RPC when we complete data sets in alternate columns. This can be extended in the future
@@ -2227,9 +2229,20 @@ impl Blockstore {
         slot: u64,
         just_inserted_shreds: &mut HashMap<(BlockLocation, ShredId), Cow<'_, Shred>>,
         parent_meta_working_set: &mut HashMap<(BlockLocation, u64), WorkingEntry<ParentMeta>>,
-    ) {
-        match parent_meta_working_set.get(&(location, slot)) {
-            Some(WorkingEntry::Dirty(parent_meta)) if parent_meta.populated_from_block_header() => {
+    ) -> Result<()> {
+        let key = (location, slot);
+
+        let parent_meta = parent_meta_working_set
+            .get(&key)
+            .and_then(|pm| match pm {
+                WorkingEntry::Dirty(e) => Some(e),
+                WorkingEntry::Clean(_) => None,
+            })
+            .copied()
+            .or(self.parent_meta_cf.get((slot, location))?);
+
+        match parent_meta {
+            Some(parent_meta) if parent_meta.populated_from_block_header() => {
                 // If a parent meta exists, update it only if it was populated from the block header
                 self.maybe_insert_update_parent(
                     shred,
@@ -2255,6 +2268,8 @@ impl Blockstore {
             }
             _ => {}
         }
+
+        Ok(())
     }
 
     fn should_insert_coding_shred(shred: &Shred, max_root: Slot) -> bool {
