@@ -331,7 +331,7 @@ struct ParentMetaWorkingSetEntry {
     parent_meta: Option<WorkingEntry<ParentMeta>>,
     /// Whether we've already loaded this key from the blockstore. Once true, we use
     /// the cached `parent_meta` value instead of hitting the blockstore again.
-    hit_blockstore: bool,
+    fetched_from_blockstore: bool,
 }
 
 struct ShredInsertionTracker<'a> {
@@ -2273,10 +2273,9 @@ impl Blockstore {
                 return Ok(());
             }
         }
-
         // If we haven't hit blockstore for this key yet...
-        if !entry.hit_blockstore {
-            entry.hit_blockstore = true;
+        else if !entry.fetched_from_blockstore {
+            entry.fetched_from_blockstore = true;
 
             if let Some(parent_meta) = self.parent_meta_cf.get((slot, location))? {
                 entry.parent_meta = Some(WorkingEntry::Clean(parent_meta));
