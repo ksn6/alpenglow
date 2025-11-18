@@ -479,9 +479,7 @@ fn record_and_complete_block(
     loop {
         let remaining_slot_time = block_timeout.saturating_sub(block_timer.elapsed());
         if remaining_slot_time.is_zero() {
-            println!(
-                "!!!!! REMAINING SLOT TIME IS ZERO :: {optimistic_parent:?}"
-            );
+            println!("!!!!! REMAINING SLOT TIME IS ZERO :: {optimistic_parent:?}");
             break;
         }
 
