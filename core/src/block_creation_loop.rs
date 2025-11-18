@@ -474,14 +474,13 @@ fn record_and_complete_block(
     let poh_recorder = ctx.poh_recorder.as_ref();
     let record_receiver = &mut ctx.record_receiver;
 
-    println!("!!!!! INITIAL OPTIMISTIC PARENT :: {:?}", optimistic_parent);
+    println!("!!!!! INITIAL OPTIMISTIC PARENT :: {optimistic_parent:?}");
 
     loop {
         let remaining_slot_time = block_timeout.saturating_sub(block_timer.elapsed());
         if remaining_slot_time.is_zero() {
             println!(
-                "!!!!! REMAINING SLOT TIME IS ZERO :: {:?}",
-                optimistic_parent
+                "!!!!! REMAINING SLOT TIME IS ZERO :: {optimistic_parent:?}"
             );
             break;
         }
