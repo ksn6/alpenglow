@@ -344,7 +344,20 @@ fn produce_window(
     ctx: &mut LeaderContext,
 ) -> Result<(), StartLeaderError> {
     // Insert the first bank
+    if fast_leader_handover {
+        println!(
+            "!!!!! {} produce_window :: fast leader handover detected",
+            ctx.my_pubkey
+        );
+    }
     start_leader_retry_replay(start_slot, parent_slot, skip_timer, ctx)?;
+
+    if fast_leader_handover {
+        println!(
+            "!!!!! {} produce_window :: start_leader_retry_replay succeeded !",
+            ctx.my_pubkey
+        );
+    }
 
     let my_pubkey = ctx.my_pubkey;
     let mut window_production_start = Measure::start("window_production");
@@ -473,12 +486,14 @@ fn record_and_complete_block(
             break;
         }
 
+        // If we are building a block on an optimistically chosen parent...
         if let Some(optimistic_parent_block) = optimistic_parent {
+            // ... then wait for the parent ready channel
             if let Ok(leader_window_info) = ctx.leader_window_info_receiver.try_recv() {
                 // TODO(ksn): reset block timer
                 if leader_window_info.parent_block == optimistic_parent_block {
                     println!(
-                        "!!!!! {} {} OPTIMISTIC PARENT MATCHED",
+                        "!!!!! {} {} inner - HAPPY CASE!",
                         leader_window_info.start_slot, leader_window_info.end_slot
                     );
                     optimistic_parent = None;
@@ -486,7 +501,7 @@ fn record_and_complete_block(
                     // TODO(ksn): Parent ready doesn't match optimistic parent
                     // Need to send UpdateParent block component
                     println!(
-                        "!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: \
+                        "!!!!! {} {} inner - SAD CASE! optimistic_parent_block = {:?} :: \
                          parent_ready_block = {:?}",
                         leader_window_info.start_slot,
                         leader_window_info.end_slot,
@@ -528,9 +543,9 @@ fn record_and_complete_block(
         if optimistic_parent_block != parent_ready_leader_window_info.parent_block {
             // TODO(ksn): Parent ready doesn't match optimistic parent
             // Need to send UpdateParent block component
-            optimistic_parent = None;
+            // optimistic_parent = None;
             println!(
-                "!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: \
+                "!!!!! {} {} outer - SAD CASE! optimistic_parent_block = {:?} :: \
                  parent_ready_block = {:?}",
                 parent_ready_leader_window_info.start_slot,
                 parent_ready_leader_window_info.end_slot,
@@ -538,16 +553,14 @@ fn record_and_complete_block(
                 parent_ready_leader_window_info.parent_block
             );
         } else {
-            optimistic_parent = None;
+            // optimistic_parent = None;
             println!(
-                "!!!!! {} {} HAPPY CASE!",
+                "!!!!! {} {} outer - HAPPY CASE!",
                 parent_ready_leader_window_info.start_slot,
                 parent_ready_leader_window_info.end_slot
             );
         }
     }
-
-    println!("!!!!! optimistic_parent = {:?}", optimistic_parent);
 
     // Shutdown and clear any inflight records
     // TODO: do we need to lower the block timeout from 400ms to account for this / insertion of the block footer
