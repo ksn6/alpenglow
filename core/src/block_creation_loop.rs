@@ -485,7 +485,14 @@ fn record_and_complete_block(
                 } else {
                     // TODO(ksn): Parent ready doesn't match optimistic parent
                     // Need to send UpdateParent block component
-                    println!("!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: parent_ready_block = {:?}", leader_window_info.start_slot, leader_window_info.end_slot, optimistic_parent_block, leader_window_info.parent_block);
+                    println!(
+                        "!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: \
+                         parent_ready_block = {:?}",
+                        leader_window_info.start_slot,
+                        leader_window_info.end_slot,
+                        optimistic_parent_block,
+                        leader_window_info.parent_block
+                    );
                     optimistic_parent = None;
                 }
             }
@@ -522,7 +529,14 @@ fn record_and_complete_block(
             // TODO(ksn): Parent ready doesn't match optimistic parent
             // Need to send UpdateParent block component
             optimistic_parent = None;
-            println!("!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: parent_ready_block = {:?}", parent_ready_leader_window_info.start_slot, parent_ready_leader_window_info.end_slot, optimistic_parent_block, parent_ready_leader_window_info.parent_block);
+            println!(
+                "!!!!! {} {} PARENT READY TIME optimistic_parent_block = {:?} :: \
+                 parent_ready_block = {:?}",
+                parent_ready_leader_window_info.start_slot,
+                parent_ready_leader_window_info.end_slot,
+                optimistic_parent_block,
+                parent_ready_leader_window_info.parent_block
+            );
         } else {
             optimistic_parent = None;
             println!(
