@@ -67,6 +67,9 @@ pub enum PohRecorderError {
 
     #[error("channel disconnected")]
     ChannelDisconnected,
+
+    #[error("parent ready not observed")]
+    ParentReadyNotObserved,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, PohRecorderError>;

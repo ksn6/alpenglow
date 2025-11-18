@@ -11,7 +11,9 @@ use {
     },
     crossbeam_channel::{select_biased, Receiver},
     solana_clock::Slot,
-    solana_entry::block_component::BlockFooterV1,
+    solana_entry::block_component::{
+        BlockFooterV1, BlockMarkerV1, UpdateParentV1, VersionedBlockMarker, VersionedUpdateParent,
+    },
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
     solana_ledger::{
@@ -33,6 +35,7 @@ use {
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo},
+    solana_votor_messages::consensus_message::Block,
     stats::{BlockCreationLoopMetrics, SlotMetrics},
     std::{
         sync::{
@@ -472,7 +475,6 @@ fn record_and_complete_block(
     block_timeout: Duration,
 ) -> Result<(), PohRecorderError> {
     let poh_recorder = ctx.poh_recorder.as_ref();
-    let record_receiver = &mut ctx.record_receiver;
 
     println!("!!!!! INITIAL OPTIMISTIC PARENT :: {optimistic_parent:?}");
 
@@ -505,12 +507,22 @@ fn record_and_complete_block(
                         optimistic_parent_block,
                         leader_window_info.parent_block
                     );
+
+                    send_update_parent(poh_recorder, leader_window_info.parent_block)?;
+                    shutdown_and_drain_record_receiver(poh_recorder, &mut ctx.record_receiver)?;
+                    sad_leader_handover(
+                        ctx,
+                        poh_recorder,
+                        optimistic_parent_block.0,
+                        leader_window_info.parent_block.0,
+                    )?;
+
                     optimistic_parent = None;
                 }
             }
         }
 
-        let Ok(record) = record_receiver.recv_timeout(remaining_slot_time) else {
+        let Ok(record) = ctx.record_receiver.recv_timeout(remaining_slot_time) else {
             continue;
         };
 
@@ -521,7 +533,7 @@ fn record_and_complete_block(
         )?;
     }
 
-    if let Some(optimistic_parent_block) = optimistic_parent {
+    let new_parent = if let Some(optimistic_parent_block) = optimistic_parent.take() {
         let parent_ready_leader_window_info = ctx
             .leader_window_info_receiver
             .recv_timeout(Duration::from_secs(1))
@@ -534,13 +546,12 @@ fn record_and_complete_block(
             });
 
         let Some(parent_ready_leader_window_info) = parent_ready_leader_window_info else {
-            panic!("COULDN'T GET A PARENT READY");
+            return Err(PohRecorderError::ParentReadyNotObserved);
         };
 
         if optimistic_parent_block != parent_ready_leader_window_info.parent_block {
             // TODO(ksn): Parent ready doesn't match optimistic parent
             // Need to send UpdateParent block component
-            // optimistic_parent = None;
             println!(
                 "!!!!! {} {} outer - SAD CASE! optimistic_parent_block = {:?} :: \
                  parent_ready_block = {:?}",
@@ -549,28 +560,30 @@ fn record_and_complete_block(
                 optimistic_parent_block,
                 parent_ready_leader_window_info.parent_block
             );
+
+            send_update_parent(poh_recorder, parent_ready_leader_window_info.parent_block)?;
+
+            Some((
+                optimistic_parent_block,
+                parent_ready_leader_window_info.parent_block,
+            ))
         } else {
-            // optimistic_parent = None;
             println!(
                 "!!!!! {} {} outer - HAPPY CASE!",
                 parent_ready_leader_window_info.start_slot,
                 parent_ready_leader_window_info.end_slot
             );
-        }
-    }
 
-    // Shutdown and clear any inflight records
-    // TODO: do we need to lower the block timeout from 400ms to account for this / insertion of the block footer
-    record_receiver.shutdown();
-    while !record_receiver.is_safe_to_restart() {
-        let Ok(record) = record_receiver.recv_timeout(Duration::ZERO) else {
-            continue;
-        };
-        poh_recorder.write().unwrap().record(
-            record.slot,
-            record.mixins,
-            record.transaction_batches,
-        )?;
+            None
+        }
+    } else {
+        None
+    };
+
+    shutdown_and_drain_record_receiver(poh_recorder, &mut ctx.record_receiver)?;
+
+    if let Some(((old_parent_slot, _), (new_parent_slot, _new_parent_block_id))) = new_parent {
+        sad_leader_handover(ctx, poh_recorder, old_parent_slot, new_parent_slot)?;
     }
 
     // Alpentick and clear bank
@@ -603,6 +616,75 @@ fn record_and_complete_block(
     drop(bank);
     w_poh_recorder.tick_alpenglow(max_tick_height, footer);
 
+    Ok(())
+}
+
+fn send_update_parent(
+    poh_recorder: &RwLock<PohRecorder>,
+    new_parent_block: Block,
+) -> Result<(), PohRecorderError> {
+    let (new_parent_slot, new_parent_block_id) = new_parent_block;
+    let update_parent = UpdateParentV1 {
+        new_parent_slot,
+        new_parent_block_id,
+    };
+    let update_parent = VersionedUpdateParent::V1(update_parent);
+    let update_parent = BlockMarkerV1::UpdateParent(update_parent);
+    let update_parent = VersionedBlockMarker::V1(update_parent);
+    poh_recorder.write().unwrap().send_marker(update_parent)?;
+    Ok(())
+}
+
+fn shutdown_and_drain_record_receiver(
+    poh_recorder: &RwLock<PohRecorder>,
+    record_receiver: &mut RecordReceiver,
+) -> Result<(), PohRecorderError> {
+    record_receiver.shutdown();
+
+    while !record_receiver.is_safe_to_restart() {
+        let Ok(record) = record_receiver.recv_timeout(Duration::ZERO) else {
+            continue;
+        };
+        poh_recorder.write().unwrap().record(
+            record.slot,
+            record.mixins,
+            record.transaction_batches,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn sad_leader_handover(
+    ctx: &LeaderContext,
+    poh_recorder: &RwLock<PohRecorder>,
+    old_parent_slot: u64,
+    new_parent_slot: u64,
+) -> Result<(), PohRecorderError> {
+    let new_bank = {
+        // TODO(ksn): the errors here are bs placeholders - make new errors
+        let parent = poh_recorder
+            .read()
+            .unwrap()
+            .bank()
+            .ok_or(PohRecorderError::ParentReadyNotObserved)?
+            .parent()
+            .ok_or(PohRecorderError::ParentReadyNotObserved)?;
+
+        // TODO(ksn): how do we specify new_parent_block_id?
+        Bank::new_from_parent(parent, &ctx.my_pubkey, new_parent_slot)
+    };
+    let mut w_bank_forks = ctx.bank_forks.write().unwrap();
+    let (slots_to_purge, removed_banks) =
+        w_bank_forks.dump_slots(std::iter::once(&old_parent_slot));
+    let root_bank = w_bank_forks.root_bank();
+    root_bank.remove_unrooted_slots(&slots_to_purge);
+    drop(removed_banks);
+    for (slot, _) in slots_to_purge {
+        root_bank.clear_slot_signatures(slot);
+        root_bank.prune_program_cache_by_deployment_slot(slot);
+    }
+    w_bank_forks.insert(new_bank);
     Ok(())
 }
 
