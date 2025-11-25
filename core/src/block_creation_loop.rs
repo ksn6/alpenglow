@@ -32,7 +32,7 @@ use {
     solana_runtime::{
         bank::{Bank, NewBankOptions},
         bank_forks::BankForks,
-        block_component_processor::BlockComponentProcessor,
+        block_component_processor::{clear_bank, BlockComponentProcessor},
     },
     solana_version::version,
     solana_votor::{common::block_timeout, event::LeaderWindowInfo},
@@ -683,21 +683,6 @@ fn shutdown_and_drain_record_receiver(
     Ok(())
 }
 
-fn clear_bank(ctx: &mut LeaderContext, slot: u64) {
-    let mut w_bank_forks = ctx.bank_forks.write().unwrap();
-    let (slots_to_purge, removed_banks) = w_bank_forks.dump_slots(std::iter::once(&slot));
-
-    let root_bank = w_bank_forks.root_bank();
-    root_bank.remove_unrooted_slots(&slots_to_purge);
-
-    drop(removed_banks);
-
-    for (slot, _) in slots_to_purge {
-        root_bank.clear_slot_signatures(slot);
-        root_bank.prune_program_cache_by_deployment_slot(slot);
-    }
-}
-
 fn sad_leader_handover(
     ctx: &mut LeaderContext,
     slot: u64,
@@ -705,7 +690,7 @@ fn sad_leader_handover(
     new_parent_slot: u64,
     skip_timer: Instant,
 ) -> Result<(), StartLeaderError> {
-    clear_bank(ctx, old_parent_slot);
+    clear_bank(&ctx.bank_forks, old_parent_slot);
     start_leader_retry_replay(slot, new_parent_slot, skip_timer, ctx)
 }
 
