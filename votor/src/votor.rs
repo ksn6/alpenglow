@@ -116,6 +116,9 @@ pub struct VotorConfig {
     pub event_receiver: VotorEventReceiver,
     pub consensus_message_receiver: Receiver<ConsensusMessage>,
     pub consensus_metrics_receiver: ConsensusMetricsEventReceiver,
+
+    // Testing
+    pub skip_final_block_of_leader_window: Arc<AtomicBool>,
 }
 
 /// Context shared with block creation, replay, gossip, banking stage etc
@@ -164,6 +167,7 @@ impl Votor {
             consensus_message_receiver: bls_receiver,
             consensus_metrics_sender,
             consensus_metrics_receiver,
+            skip_final_block_of_leader_window,
         } = config;
 
         let identity_keypair = cluster_info.keypair().clone();
@@ -195,6 +199,7 @@ impl Votor {
             wait_to_vote_slot,
             sharable_banks: sharable_banks.clone(),
             consensus_metrics_sender: consensus_metrics_sender.clone(),
+            skip_final_block_of_leader_window,
         };
 
         let root_context = RootContext {

@@ -343,6 +343,7 @@ pub struct ValidatorConfig {
     pub retransmit_xdp: Option<XdpConfig>,
     pub voting_service_test_override: Option<VotingServiceOverride>,
     pub repair_handler_type: RepairHandlerType,
+    pub skip_final_block_of_leader_window: Arc<AtomicBool>,
 }
 
 impl ValidatorConfig {
@@ -428,6 +429,7 @@ impl ValidatorConfig {
             retransmit_xdp: None,
             repair_handler_type: RepairHandlerType::default(),
             voting_service_test_override: None,
+            skip_final_block_of_leader_window: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1703,6 +1705,7 @@ impl Validator {
             config.voting_service_test_override.clone(),
             votor_event_sender.clone(),
             votor_event_receiver,
+            config.skip_final_block_of_leader_window.clone(),
             optimistic_parent_sender,
             alpenglow_quic_server_config,
             staked_nodes.clone(),

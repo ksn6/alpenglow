@@ -299,6 +299,7 @@ pub struct ReplayStageConfig {
     pub consensus_metrics_sender: ConsensusMetricsEventSender,
     pub consensus_metrics_receiver: ConsensusMetricsEventReceiver,
     pub migration_status: Arc<MigrationStatus>,
+    pub skip_final_block_of_leader_window: Arc<AtomicBool>,
 }
 
 pub struct ReplaySenders {
@@ -620,6 +621,7 @@ impl ReplayStage {
             consensus_metrics_sender,
             consensus_metrics_receiver,
             migration_status,
+            skip_final_block_of_leader_window,
         } = config;
 
         let ReplaySenders {
@@ -694,6 +696,7 @@ impl ReplayStage {
             consensus_metrics_sender,
             consensus_metrics_receiver,
             migration_status: migration_status.clone(),
+            skip_final_block_of_leader_window,
         };
         let votor = Votor::new(votor_config);
 

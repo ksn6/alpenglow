@@ -644,6 +644,7 @@ pub fn execute(
             Arc::new(AtomicBool::new(false)),
         )]
         .into(),
+        skip_final_block_of_leader_window: Arc::new(AtomicBool::new(false)),
     };
 
     let reserved = validator_config

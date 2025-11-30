@@ -210,6 +210,7 @@ impl Tvu {
         voting_service_test_override: Option<VotingServiceOverride>,
         votor_event_sender: VotorEventSender,
         votor_event_receiver: VotorEventReceiver,
+        skip_final_block_of_leader_window: Arc<AtomicBool>,
         optimistic_parent_sender: Sender<LeaderWindowInfo>,
         alpenglow_quic_server_config: QuicServerParams,
         staked_nodes: Arc<RwLock<StakedNodes>>,
@@ -449,6 +450,7 @@ impl Tvu {
             consensus_metrics_sender: consensus_metrics_sender.clone(),
             consensus_metrics_receiver,
             migration_status,
+            skip_final_block_of_leader_window,
         };
 
         let voting_service = VotingService::new(
@@ -753,6 +755,7 @@ pub mod tests {
             None,
             votor_event_sender,
             votor_event_receiver,
+            Arc::new(AtomicBool::new(false)),
             optimistic_parent_sender,
             QuicServerParams::default_for_tests(),
             Arc::new(RwLock::new(StakedNodes::default())),

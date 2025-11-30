@@ -21,7 +21,10 @@ use {
         consensus_message::{ConsensusMessage, VoteMessage, BLS_KEYPAIR_DERIVE_SEED},
         vote::Vote,
     },
-    std::{collections::HashMap, sync::Arc},
+    std::{
+        collections::HashMap,
+        sync::{atomic::AtomicBool, Arc},
+    },
     thiserror::Error,
 };
 
@@ -124,6 +127,9 @@ pub struct VotingContext {
     pub wait_to_vote_slot: Option<u64>,
     pub sharable_banks: SharableBanks,
     pub consensus_metrics_sender: ConsensusMetricsEventSender,
+
+    // Testing
+    pub skip_final_block_of_leader_window: Arc<AtomicBool>,
 }
 
 fn get_bls_keypair(
@@ -389,6 +395,7 @@ mod tests {
             wait_to_vote_slot: None,
             sharable_banks,
             consensus_metrics_sender: unbounded().0,
+            skip_final_block_of_leader_window: Arc::new(AtomicBool::new(false)),
         }
     }
 

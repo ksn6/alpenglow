@@ -84,6 +84,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         retransmit_xdp: config.retransmit_xdp.clone(),
         voting_service_test_override: config.voting_service_test_override.clone(),
         repair_handler_type: config.repair_handler_type.clone(),
+        skip_final_block_of_leader_window: config.skip_final_block_of_leader_window.clone(),
     }
 }
 

@@ -263,7 +263,14 @@ impl EventHandler {
                     .map_err(|_| SendError(()))?;
                 let (block, parent_block) = Self::get_block_parent_block(&bank);
                 info!("{my_pubkey}: Block {block:?} parent {parent_block:?}");
-                if Self::try_notar(
+
+                if vctx
+                    .skip_final_block_of_leader_window
+                    .load(Ordering::Relaxed)
+                    && slot == last_of_consecutive_leader_slots(slot)
+                {
+                    Self::try_skip_window(my_pubkey, slot, vctx, &mut votes)?;
+                } else if Self::try_notar(
                     my_pubkey,
                     block,
                     parent_block,
@@ -929,6 +936,7 @@ mod tests {
             has_new_vote_been_rooted: false,
             own_vote_sender,
             consensus_metrics_sender,
+            skip_final_block_of_leader_window: Arc::new(AtomicBool::new(false)),
         };
 
         let root_context = RootContext {
