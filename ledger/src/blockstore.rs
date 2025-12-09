@@ -5427,10 +5427,16 @@ impl Blockstore {
         });
 
         for (slot, new_parent_slot) in update_parent_entries {
-            // Get old parent from slot meta; update parent_slot to new value
+            // Get old parent from slot meta; update parent_slot to new value.
+            // Check new_slot_meta first (handles same-batch case where BlockHeader
+            // already set parent), then fall back to old_slot_meta (from database).
             let old_parent_slot =
                 if let Some(entry) = working_set.get_mut(&(BlockLocation::Original, slot)) {
-                    let old = entry.old_slot_meta.as_ref().and_then(|m| m.parent_slot);
+                    let old = entry
+                        .new_slot_meta
+                        .borrow()
+                        .parent_slot
+                        .or_else(|| entry.old_slot_meta.as_ref().and_then(|m| m.parent_slot));
                     entry.new_slot_meta.borrow_mut().parent_slot = Some(new_parent_slot);
                     old
                 } else {
@@ -13347,5 +13353,41 @@ pub mod tests {
         assert_eq!(blockstore.meta(50).unwrap().unwrap().parent_slot, Some(45));
         verify_next_slots(&blockstore, 48, &[]);
         verify_next_slots(&blockstore, 45, &[50]);
+    }
+
+    #[test]
+    fn test_same_batch_block_header_then_update_parent() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        // Insert both BlockHeader and UpdateParent in the same batch,
+        // with BlockHeader shreds first (lower indices)
+        let mut shreds = create_block_header_shreds(60, 55, Hash::new_unique());
+        shreds.extend(create_update_parent_shreds(60, 52, Hash::new_unique(), 32));
+
+        blockstore.insert_shreds(shreds, None, true).unwrap();
+
+        // UpdateParent should take precedence
+        assert_eq!(blockstore.meta(60).unwrap().unwrap().parent_slot, Some(52));
+        verify_next_slots(&blockstore, 55, &[]);
+        verify_next_slots(&blockstore, 52, &[60]);
+    }
+
+    #[test]
+    fn test_same_batch_update_parent_then_block_header() {
+        let ledger_path = get_tmp_ledger_path_auto_delete!();
+        let blockstore = Blockstore::open(ledger_path.path()).unwrap();
+
+        // Insert both UpdateParent and BlockHeader in the same batch,
+        // with UpdateParent shreds first (but BlockHeader is at index 0)
+        let mut shreds = create_update_parent_shreds(70, 65, Hash::new_unique(), 32);
+        shreds.extend(create_block_header_shreds(70, 68, Hash::new_unique()));
+
+        blockstore.insert_shreds(shreds, None, true).unwrap();
+
+        // UpdateParent should take precedence regardless of insertion order
+        assert_eq!(blockstore.meta(70).unwrap().unwrap().parent_slot, Some(65));
+        verify_next_slots(&blockstore, 68, &[]);
+        verify_next_slots(&blockstore, 65, &[70]);
     }
 }
