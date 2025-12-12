@@ -45,7 +45,7 @@
 use {
     crate::consensus_message::{Block, Certificate, CertificateType},
     log::*,
-    solana_clock::{Epoch, Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
+    solana_clock::{Epoch, Slot},
     solana_epoch_schedule::EpochSchedule,
     spl_pod::solana_pubkey::Pubkey,
     std::{
@@ -255,8 +255,7 @@ impl MigrationPhase {
 
     /// Should this block allow the UpdateParent marker, i.e., support fast leader handover?
     fn should_allow_fast_leader_handover(&self, slot: Slot) -> bool {
-        // Only allow for alpenglow blocks, 2 leader windows after after migration
-        self.is_alpenglow_block(slot.saturating_sub(2 * NUM_CONSECUTIVE_LEADER_SLOTS))
+        self.is_alpenglow_block(slot)
     }
 
     /// Should this block use the double merkle root as the block id (instead of chained merkle root)?

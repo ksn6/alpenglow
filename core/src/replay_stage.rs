@@ -870,7 +870,6 @@ impl ReplayStage {
                     &votor_event_sender,
                 );
                 let did_complete_bank = !new_frozen_slots.is_empty();
-
                 if migration_status.is_alpenglow_enabled() {
                     let fast_leader_handover_notifies = {
                         let bank_forks_r = bank_forks.read().unwrap();
