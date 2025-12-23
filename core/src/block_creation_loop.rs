@@ -568,7 +568,7 @@ fn time_left(skip_timer: Option<Instant>, timeout: Duration) -> Option<Duration>
 
 /// Returns true if there is time remaining, or if no timer is set (infinite time).
 fn has_time_remaining(skip_timer: Option<Instant>, timeout: Duration) -> bool {
-    time_left(skip_timer, timeout).map_or(true, |t| !t.is_zero())
+    time_left(skip_timer, timeout).is_none_or(|t| !t.is_zero())
 }
 
 enum RecvResult {
