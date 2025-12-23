@@ -247,36 +247,29 @@ fn start_loop(config: BlockCreationLoopConfig) {
             );
         }
 
-        // Race between parent ready notification and optimistic parent events
-        // Parent ready is checked first and has priority if both channels are ready
+        // Race between parent ready notification and optimistic parent events.
+        // Parent ready is checked first and has priority if both channels are ready.
         let window_source = select_biased! {
             recv(ctx.leader_window_info_receiver) -> msg => {
-                // Drain all pending messages and keep the latest one
-                msg.ok()
-                    .and_then(|window| {
-                        ctx.leader_window_info_receiver
-                            .try_iter()
-                            .last()
-                            .or(Some(window))
-                    })
-                    .map(ParentSource::ParentReady)
+                msg.ok().map(ParentSource::ParentReady)
             },
             recv(optimistic_parent_receiver) -> msg => {
-                // Drain all pending messages and keep the latest one
-                msg.ok()
-                    .and_then(|bank| {
-                        optimistic_parent_receiver
-                            .try_iter()
-                            .last()
-                            .or(Some(bank))
-                    })
-                    .map(ParentSource::OptimisticParent)
+                msg.ok().map(ParentSource::OptimisticParent)
             },
             default(Duration::from_secs(1)) => None,
         };
 
-        let Some(window_source) = window_source else {
-            continue;
+        // Drain any additional pending messages and keep the latest one
+        let window_source = match window_source {
+            Some(ParentSource::ParentReady(first)) => {
+                let latest = ctx.leader_window_info_receiver.try_iter().last().unwrap_or(first);
+                ParentSource::ParentReady(latest)
+            }
+            Some(ParentSource::OptimisticParent(first)) => {
+                let latest = optimistic_parent_receiver.try_iter().last().unwrap_or(first);
+                ParentSource::OptimisticParent(latest)
+            }
+            None => continue,
         };
 
         let LeaderWindowInfo {
