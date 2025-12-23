@@ -3528,7 +3528,7 @@ impl ReplayStage {
             start_slot: next_slot,
             end_slot,
             parent_block: (bank.slot(), block_id),
-            skip_timer: Instant::now(), // ignore for now
+            skip_timer: None, // Skip timer doesn't begin until ParentReady has been observed
         };
 
         optimistic_parent_sender
@@ -3581,6 +3581,21 @@ impl ReplayStage {
             bank.set_block_id(block_id);
         }
         Ok(())
+    }
+
+    pub(crate) fn clear_bank(bank_forks: &RwLock<BankForks>, slot: u64) {
+        let mut w_bank_forks = bank_forks.write().unwrap();
+        let (slots_to_purge, removed_banks) = w_bank_forks.dump_slots(std::iter::once(&slot));
+
+        let root_bank = w_bank_forks.root_bank();
+        root_bank.remove_unrooted_slots(&slots_to_purge);
+
+        drop(removed_banks);
+
+        for (slot, _) in slots_to_purge {
+            root_bank.clear_slot_signatures(slot);
+            root_bank.prune_program_cache_by_deployment_slot(slot);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

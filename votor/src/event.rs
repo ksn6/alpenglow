@@ -19,7 +19,7 @@ pub struct LeaderWindowInfo {
     pub start_slot: Slot,
     pub end_slot: Slot,
     pub parent_block: Block,
-    pub skip_timer: Instant,
+    pub skip_timer: Option<Instant>,
 }
 
 pub type VotorEventSender = Sender<VotorEvent>;
