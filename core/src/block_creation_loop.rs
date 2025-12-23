@@ -262,11 +262,18 @@ fn start_loop(config: BlockCreationLoopConfig) {
         // Drain any additional pending messages and keep the latest one
         let window_source = match window_source {
             Some(ParentSource::ParentReady(first)) => {
-                let latest = ctx.leader_window_info_receiver.try_iter().last().unwrap_or(first);
+                let latest = ctx
+                    .leader_window_info_receiver
+                    .try_iter()
+                    .last()
+                    .unwrap_or(first);
                 ParentSource::ParentReady(latest)
             }
             Some(ParentSource::OptimisticParent(first)) => {
-                let latest = optimistic_parent_receiver.try_iter().last().unwrap_or(first);
+                let latest = optimistic_parent_receiver
+                    .try_iter()
+                    .last()
+                    .unwrap_or(first);
                 ParentSource::OptimisticParent(latest)
             }
             None => continue,
