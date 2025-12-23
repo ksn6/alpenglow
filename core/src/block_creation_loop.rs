@@ -367,10 +367,8 @@ fn produce_window(
         );
 
         let mut bank_completion_measure = Measure::start("bank_completion");
-        let optimistic_parent = match fast_leader_handover && slot == start_slot {
-            true => Some((parent_slot, parent_hash)),
-            false => None,
-        };
+        let optimistic_parent =
+            (fast_leader_handover && slot == start_slot).then_some((parent_slot, parent_hash));
         if let Err(e) = record_and_complete_block(ctx, optimistic_parent, &mut skip_timer, timeout)
         {
             panic!("PohRecorder record failed: {e:?}");
