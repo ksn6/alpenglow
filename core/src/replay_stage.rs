@@ -40,7 +40,7 @@ use {
     },
     solana_accounts_db::contains::Contains,
     solana_clock::{BankId, Slot, NUM_CONSECUTIVE_LEADER_SLOTS},
-    solana_entry::entry::VerifyRecyclers,
+    solana_entry::{block_component::VersionedUpdateParent, entry::VerifyRecyclers},
     solana_geyser_plugin_manager::block_metadata_notifier_interface::BlockMetadataNotifierArc,
     solana_gossip::cluster_info::ClusterInfo,
     solana_hash::Hash,
@@ -74,6 +74,7 @@ use {
     solana_runtime::{
         bank::{bank_hash_details, Bank, NewBankOptions},
         bank_forks::{BankForks, SetRootError, MAX_ROOT_DISTANCE_FOR_VOTE_ONLY},
+        block_component_processor::BlockComponentProcessorError,
         commitment::BlockCommitmentCache,
         installed_scheduler_pool::BankWithScheduler,
         prioritization_fee_cache::PrioritizationFeeCache,
@@ -3637,6 +3638,22 @@ impl ReplayStage {
             if let Some(replay_result) = &replay_result.replay_result {
                 match replay_result {
                     Ok(replay_tx_count) => tx_count += replay_tx_count,
+                    Err(BlockstoreProcessorError::BlockComponentProcessor(
+                        BlockComponentProcessorError::AbandonedBank(update_parent),
+                    )) => {
+                        let parent_slot = match update_parent {
+                            VersionedUpdateParent::V1(x) => x.new_parent_slot,
+                        };
+
+                        Self::clear_bank(bank_forks, bank_slot);
+
+                        if let Some(parent_bank) = bank_forks.read().unwrap().get(parent_slot) {
+                            if let Some(slot_progress) = progress.get_mut(&bank_slot) {
+                                slot_progress.replay_progress.write().unwrap().last_entry =
+                                    parent_bank.last_blockhash();
+                            }
+                        }
+                    }
                     Err(err) => {
                         let root = bank_forks.read().unwrap().root();
                         Self::mark_dead_slot(
