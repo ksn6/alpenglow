@@ -3529,7 +3529,7 @@ impl ReplayStage {
             start_slot: next_slot,
             end_slot,
             parent_block: (bank.slot(), block_id),
-            skip_timer: None, // Skip timer doesn't begin until ParentReady has been observed
+            block_timer: Instant::now(),
         };
 
         optimistic_parent_sender
@@ -3584,7 +3584,7 @@ impl ReplayStage {
         Ok(())
     }
 
-    pub(crate) fn clear_bank(bank_forks: &RwLock<BankForks>, slot: u64) {
+    pub(crate) fn clear_bank(bank_forks: &RwLock<BankForks>, slot: Slot) {
         let mut w_bank_forks = bank_forks.write().unwrap();
         let (slots_to_purge, removed_banks) = w_bank_forks.dump_slots(std::iter::once(&slot));
 

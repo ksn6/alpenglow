@@ -428,7 +428,7 @@ impl ConsensusPoolService {
                     start_slot,
                     end_slot,
                     parent_block,
-                    skip_timer: Some(Instant::now()),
+                    block_timer: Instant::now(),
                 }));
                 stats.parent_ready_produce_window += 1;
             }
