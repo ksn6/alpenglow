@@ -2095,7 +2095,7 @@ mod tests {
     /// test run_window_request responds with the right shred, and do not overrun
     pub fn run_highest_window_request(slot: Slot, num_slots: u64, nonce: Nonce) {
         let recycler = PacketBatchRecycler::default();
-        solana_logger::setup();
+        agave_logger::setup();
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
         let handler = StandardRepairHandler::new(blockstore.clone());
@@ -2148,7 +2148,7 @@ mod tests {
         let slot = 2;
         let nonce = 9;
         let recycler = PacketBatchRecycler::default();
-        solana_logger::setup();
+        agave_logger::setup();
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
         let handler = StandardRepairHandler::new(blockstore.clone());
@@ -2330,7 +2330,7 @@ mod tests {
     }
 
     pub fn run_orphan(slot: Slot, num_slots: u64, nonce: Nonce) {
-        solana_logger::setup();
+        agave_logger::setup();
         let recycler = PacketBatchRecycler::default();
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
@@ -2384,7 +2384,7 @@ mod tests {
 
     #[test]
     fn run_orphan_corrupted_shred_size() {
-        solana_logger::setup();
+        agave_logger::setup();
         let recycler = PacketBatchRecycler::default();
         let ledger_path = get_tmp_ledger_path_auto_delete!();
         let blockstore = Arc::new(Blockstore::open(ledger_path.path()).unwrap());
@@ -2440,7 +2440,7 @@ mod tests {
                 .unwrap()
         }
 
-        solana_logger::setup();
+        agave_logger::setup();
         let recycler = PacketBatchRecycler::default();
         let ledger_path = get_tmp_ledger_path_auto_delete!();
 
