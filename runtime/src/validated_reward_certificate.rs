@@ -13,7 +13,7 @@ use {
 
 /// Different types of errors that can happen when trying to construct a [`ValidatedRewardCert`].
 #[derive(Debug, PartialEq, Eq, Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error(
         "skip or notar certs have invalid slot numbers: cur={current_slot}, notar={notar_slot:?}, \
          skip={skip_slot:?}"
@@ -66,7 +66,6 @@ fn extract_slot(
 }
 
 /// Struct built by validating incoming reward certs.
-#[allow(dead_code)]
 pub(crate) struct ValidatedRewardCert {
     /// List of validators that were present in the reward certs.
     validators: Vec<Pubkey>,
@@ -74,7 +73,6 @@ pub(crate) struct ValidatedRewardCert {
 
 impl ValidatedRewardCert {
     /// If validattion of the provided reward certs succeeds, returns an instance of [`ValidatedRewardCert`].
-    #[allow(dead_code)]
     pub(crate) fn try_new(
         bank: &Bank,
         skip: &Option<SkipRewardCertificate>,
@@ -124,6 +122,11 @@ impl ValidatedRewardCert {
             )?
         }
         Ok(Self { validators })
+    }
+
+    /// Returns the validators that were extracted from the reward certs.
+    pub(crate) fn validators(&self) -> &[Pubkey] {
+        &self.validators
     }
 }
 
