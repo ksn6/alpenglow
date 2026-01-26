@@ -298,7 +298,6 @@ impl ConsensusMetrics {
 
     /// This function can be called if there is a new [`Epoch`] and it will carry out end of epoch reporting.
     fn maybe_new_epoch(&mut self, epoch: Epoch) {
-        assert!(epoch >= self.current_epoch);
         if epoch != self.current_epoch {
             self.current_epoch = epoch;
             self.end_of_epoch_reporting(epoch);
