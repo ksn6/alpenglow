@@ -9,6 +9,7 @@ use {
         banking_trace::{BankingPacketSender, BankingTracer},
         replay_stage::{Finalizer, ReplayStage},
     },
+    agave_banking_stage_ingress_types::BankingPacketBatch,
     crossbeam_channel::{select_biased, Receiver, Sender},
     solana_clock::Slot,
     solana_entry::block_component::{
