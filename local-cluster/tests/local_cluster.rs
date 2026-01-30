@@ -34,7 +34,10 @@ use {
         validator::{BlockVerificationMethod, TurbineMode, TurbineModeKind, ValidatorConfig},
     },
     solana_download_utils::download_snapshot_archive,
-    solana_entry::entry::create_ticks,
+    solana_entry::{
+        block_component::{BlockComponent, BlockMarkerV1, VersionedBlockMarker},
+        entry::create_ticks,
+    },
     solana_epoch_schedule::{MAX_LEADER_SCHEDULE_EPOCH_OFFSET, MINIMUM_SLOTS_PER_EPOCH},
     solana_gossip::{crds_data::MAX_VOTES, gossip_service::discover_validators},
     solana_hard_forks::HardForks,
@@ -8414,6 +8417,57 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
         "{} sad path slots finalized",
         finalized_sad_path_slots.len()
     );
+
+    // Log blockstore status for node 0
+    let node_0_ledger_path = cluster.ledger_path(&validator_keys[0].pubkey());
+    let blockstore = open_blockstore(&node_0_ledger_path);
+    for (slot, _meta) in blockstore.slot_meta_iterator(0).unwrap() {
+        let Ok((components, _ranges, _is_full)) =
+            blockstore.get_slot_components_with_shred_info(slot, 0, true)
+        else {
+            continue;
+        };
+        if components.is_empty() {
+            continue;
+        }
+
+        let mut entry_batch = 0u64;
+        let mut block_header = 0u64;
+        let mut block_footer = 0u64;
+        let mut update_parent = 0u64;
+        let mut genesis_certificate = 0u64;
+
+        for component in &components {
+            match component {
+                BlockComponent::EntryBatch(_) => entry_batch += 1,
+                BlockComponent::BlockMarker(VersionedBlockMarker::V1(marker)) => match marker {
+                    BlockMarkerV1::BlockHeader(_) => block_header += 1,
+                    BlockMarkerV1::BlockFooter(_) => block_footer += 1,
+                    BlockMarkerV1::UpdateParent(_) => update_parent += 1,
+                    BlockMarkerV1::GenesisCertificate(_) => genesis_certificate += 1,
+                },
+            }
+        }
+
+        let mut parts = Vec::new();
+        if entry_batch > 0 {
+            parts.push(format!("EntryBatch: {entry_batch}"));
+        }
+        if block_header > 0 {
+            parts.push(format!("BlockHeader: {block_header}"));
+        }
+        if block_footer > 0 {
+            parts.push(format!("BlockFooter: {block_footer}"));
+        }
+        if update_parent > 0 {
+            parts.push(format!("UpdateParent: {update_parent}"));
+        }
+        if genesis_certificate > 0 {
+            parts.push(format!("GenesisCertificate: {genesis_certificate}"));
+        }
+
+        info!("Slot {slot} components: {}", parts.join(", "));
+    }
 
     quic_server_thread.join().expect("quic server panicked");
 }
