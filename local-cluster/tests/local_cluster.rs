@@ -8464,22 +8464,46 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
                         ),
                     ];
 
-                    // Fund the source account with 100k SOL
+                    // Fund the source account with 10 SOL.
+                    // Use fire-and-forget send + balance polling to avoid
+                    // expiration panics while the cluster is still settling.
                     let tx_source_keypair = Keypair::new();
-                    let blockhash = clients[0].get_latest_blockhash().unwrap();
-                    let fund_tx = solana_transaction::Transaction::new_signed_with_payer(
-                        &[solana_system_interface::instruction::transfer(
-                            &funding_keypair.pubkey(),
-                            &tx_source_keypair.pubkey(),
-                            10 * solana_native_token::LAMPORTS_PER_SOL,
-                        )],
-                        Some(&funding_keypair.pubkey()),
-                        &[&funding_keypair],
-                        blockhash,
-                    );
-                    clients[0]
-                        .send_and_confirm_transaction(&fund_tx)
-                        .unwrap();
+                    let fund_amount = 10 * solana_native_token::LAMPORTS_PER_SOL;
+                    loop {
+                        if cancel.is_cancelled() {
+                            return;
+                        }
+                        let Ok(blockhash) = clients[0].get_latest_blockhash() else {
+                            sleep(Duration::from_millis(200));
+                            continue;
+                        };
+                        let fund_tx = solana_transaction::Transaction::new_signed_with_payer(
+                            &[solana_system_interface::instruction::transfer(
+                                &funding_keypair.pubkey(),
+                                &tx_source_keypair.pubkey(),
+                                fund_amount,
+                            )],
+                            Some(&funding_keypair.pubkey()),
+                            &[&funding_keypair],
+                            blockhash,
+                        );
+                        let _ = clients[0].send_transaction(&fund_tx);
+                        // Poll until the account is funded
+                        for _ in 0..20 {
+                            sleep(Duration::from_millis(200));
+                            if let Ok(bal) = clients[0].get_balance(&tx_source_keypair.pubkey()) {
+                                if bal >= fund_amount {
+                                    break;
+                                }
+                            }
+                        }
+                        if let Ok(bal) = clients[0].get_balance(&tx_source_keypair.pubkey()) {
+                            if bal >= fund_amount {
+                                break;
+                            }
+                        }
+                        warn!("tx-sender: funding not confirmed yet, retrying...");
+                    }
                     info!("tx-sender: funded source account");
 
                     let mut send_count = 0u64;
