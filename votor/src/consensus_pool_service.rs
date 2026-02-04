@@ -423,6 +423,7 @@ impl ConsensusPoolService {
         let end_slot = last_of_consecutive_leader_slots(start_slot);
 
         if (start_slot..=end_slot).any(|s| ctx.blockstore.has_existing_shreds_for_slot(s)) {
+            warn!("OH NOES!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
             warn!(
                 "{my_pubkey}: We have already produced shreds in the window \
                  {start_slot}-{end_slot}, skipping production of our leader window"

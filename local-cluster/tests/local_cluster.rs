@@ -21,6 +21,7 @@ use {
     },
     solana_cluster_type::ClusterType,
     solana_commitment_config::CommitmentConfig,
+    solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_connection_cache::client_connection::ClientConnection,
     solana_core::{
         consensus::{
@@ -8394,6 +8395,101 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
         }
     });
 
+    // Spawn a background thread to fund an account and send transfers at 20 tx/sec.
+    let tx_sender_thread = {
+        let cancel = cancel.clone();
+        let client_node_0 = cluster
+            .build_validator_tpu_quic_client(&validator_keys[0].pubkey())
+            .unwrap();
+        let client_node_1 = cluster
+            .build_validator_tpu_quic_client(&validator_keys[1].pubkey())
+            .unwrap();
+        let funding_keypair = cluster.funding_keypair.insecure_clone();
+
+        Builder::new()
+            .name("dummy-tx-sender".to_string())
+            .spawn(move || {
+                let clients = [client_node_0, client_node_1];
+
+                // Fund the source account with 100k SOL
+                let tx_source_keypair = Keypair::new();
+                let (blockhash, _) = clients[0]
+                    .rpc_client()
+                    .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                    .unwrap();
+                let mut fund_tx = system_transaction::transfer(
+                    &funding_keypair,
+                    &tx_source_keypair.pubkey(),
+                    100_000 * solana_native_token::LAMPORTS_PER_SOL,
+                    blockhash,
+                );
+                LocalCluster::send_transaction_with_retries(
+                    &clients[0],
+                    &[&funding_keypair],
+                    &mut fund_tx,
+                    10,
+                )
+                .unwrap();
+
+                let mut send_count = 0u64;
+                let mut blockhash = Hash::default();
+
+                loop {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    // Refresh blockhash every 20 sends (~1 second)
+                    if send_count % 20 == 0 {
+                        match clients[0]
+                            .rpc_client()
+                            .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                        {
+                            Ok((hash, _)) => blockhash = hash,
+                            Err(e) => {
+                                debug!("tx-sender: failed to get blockhash: {e:?}");
+                                sleep(Duration::from_millis(50));
+                                continue;
+                            }
+                        }
+                    }
+
+                    let client = &clients[send_count as usize % 2];
+                    let dest_pubkey = solana_pubkey::new_rand();
+
+                    // 0.0001 SOL = 100_000 lamports transfer
+                    let transfer_ix = solana_system_interface::instruction::transfer(
+                        &tx_source_keypair.pubkey(),
+                        &dest_pubkey,
+                        100_000,
+                    );
+                    // Priority fee ~0.0002 SOL: 1_000_000 micro-lamports/CU × 200k CU default
+                    let priority_fee_ix =
+                        ComputeBudgetInstruction::set_compute_unit_price(1_000_000);
+
+                    let message = solana_message::Message::new(
+                        &[priority_fee_ix, transfer_ix],
+                        Some(&tx_source_keypair.pubkey()),
+                    );
+                    let tx = solana_transaction::Transaction::new(
+                        &[&tx_source_keypair],
+                        message,
+                        blockhash,
+                    );
+
+                    if let Err(e) = client.try_send_transaction(&tx) {
+                        debug!("tx-sender: failed to send tx: {e:?}");
+                    }
+
+                    send_count += 1;
+                    sleep(Duration::from_millis(50));
+                }
+            })
+            .unwrap()
+    };
+
+    println!("BASIC CHECKS PASS");
+
     cluster_tests::check_for_new_roots(
         16,
         &alive_contact_infos,
@@ -8404,6 +8500,7 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
     // Stop the vote listener and get the finalized sad path slots
     cancel.cancel();
     vote_listener_thread.join().expect("vote listener panicked");
+    tx_sender_thread.join().expect("tx sender panicked");
 
     let finalized_sad_path_slots = finalized_sad_path_slots.lock().unwrap();
 
@@ -8431,42 +8528,23 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
             continue;
         }
 
-        let mut entry_batch = 0u64;
-        let mut block_header = 0u64;
-        let mut block_footer = 0u64;
-        let mut update_parent = 0u64;
-        let mut genesis_certificate = 0u64;
-
-        for component in &components {
-            match component {
-                BlockComponent::EntryBatch(_) => entry_batch += 1,
+        let parts: Vec<String> = components
+            .iter()
+            .map(|component| match component {
+                BlockComponent::EntryBatch(entries) => {
+                    let num_txs: usize = entries.iter().map(|e| e.transactions.len()).sum();
+                    format!("EntryBatch({num_txs})")
+                }
                 BlockComponent::BlockMarker(VersionedBlockMarker::V1(marker)) => match marker {
-                    BlockMarkerV1::BlockHeader(_) => block_header += 1,
-                    BlockMarkerV1::BlockFooter(_) => block_footer += 1,
-                    BlockMarkerV1::UpdateParent(_) => update_parent += 1,
-                    BlockMarkerV1::GenesisCertificate(_) => genesis_certificate += 1,
+                    BlockMarkerV1::BlockHeader(_) => "BlockHeader".to_string(),
+                    BlockMarkerV1::BlockFooter(_) => "BlockFooter".to_string(),
+                    BlockMarkerV1::UpdateParent(_) => "UpdateParent".to_string(),
+                    BlockMarkerV1::GenesisCertificate(_) => "GenesisCertificate".to_string(),
                 },
-            }
-        }
+            })
+            .collect();
 
-        let mut parts = Vec::new();
-        if entry_batch > 0 {
-            parts.push(format!("EntryBatch: {entry_batch}"));
-        }
-        if block_header > 0 {
-            parts.push(format!("BlockHeader: {block_header}"));
-        }
-        if block_footer > 0 {
-            parts.push(format!("BlockFooter: {block_footer}"));
-        }
-        if update_parent > 0 {
-            parts.push(format!("UpdateParent: {update_parent}"));
-        }
-        if genesis_certificate > 0 {
-            parts.push(format!("GenesisCertificate: {genesis_certificate}"));
-        }
-
-        info!("Slot {slot} components: {}", parts.join(", "));
+        info!("Slot {slot} components: [{}]", parts.join(", "));
     }
 
     quic_server_thread.join().expect("quic server panicked");
