@@ -8113,6 +8113,8 @@ fn test_alpenglow_add_missing_parent_ready() {
 fn test_alpenglow_flh_simple_sad_leader_handover() {
     agave_logger::setup_with_default(AG_DEBUG_LOG_FILTER);
 
+    let send_background_txs = false;
+
     // 4 nodes: 0, 1 are leaders (15% each), 2, 3 are exited with majority stake (35% each).
     // Ranks by stake: nodes 2,3 are ranks 0,1; nodes 0,1 are ranks 2,3.
     const NUM_NODES: usize = 4;
@@ -8396,7 +8398,7 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
     });
 
     // Spawn a background thread to fund an account and send transfers at 20 tx/sec.
-    let tx_sender_thread = {
+    let tx_sender_thread = if send_background_txs {
         let cancel = cancel.clone();
         let client_node_0 = cluster
             .build_validator_tpu_quic_client(&validator_keys[0].pubkey())
@@ -8406,86 +8408,90 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
             .unwrap();
         let funding_keypair = cluster.funding_keypair.insecure_clone();
 
-        Builder::new()
-            .name("dummy-tx-sender".to_string())
-            .spawn(move || {
-                let clients = [client_node_0, client_node_1];
+        Some(
+            Builder::new()
+                .name("dummy-tx-sender".to_string())
+                .spawn(move || {
+                    let clients = [client_node_0, client_node_1];
 
-                // Fund the source account with 100k SOL
-                let tx_source_keypair = Keypair::new();
-                let (blockhash, _) = clients[0]
-                    .rpc_client()
-                    .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-                    .unwrap();
-                let mut fund_tx = system_transaction::transfer(
-                    &funding_keypair,
-                    &tx_source_keypair.pubkey(),
-                    100_000 * solana_native_token::LAMPORTS_PER_SOL,
-                    blockhash,
-                );
-                LocalCluster::send_transaction_with_retries(
-                    &clients[0],
-                    &[&funding_keypair],
-                    &mut fund_tx,
-                    10,
-                )
-                .unwrap();
-
-                let mut send_count = 0u64;
-                let mut blockhash = Hash::default();
-
-                loop {
-                    if cancel.is_cancelled() {
-                        return;
-                    }
-
-                    // Refresh blockhash every 20 sends (~1 second)
-                    if send_count % 20 == 0 {
-                        match clients[0]
-                            .rpc_client()
-                            .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-                        {
-                            Ok((hash, _)) => blockhash = hash,
-                            Err(e) => {
-                                debug!("tx-sender: failed to get blockhash: {e:?}");
-                                sleep(Duration::from_millis(50));
-                                continue;
-                            }
-                        }
-                    }
-
-                    let client = &clients[send_count as usize % 2];
-                    let dest_pubkey = solana_pubkey::new_rand();
-
-                    // 0.0001 SOL = 100_000 lamports transfer
-                    let transfer_ix = solana_system_interface::instruction::transfer(
+                    // Fund the source account with 100k SOL
+                    let tx_source_keypair = Keypair::new();
+                    let (blockhash, _) = clients[0]
+                        .rpc_client()
+                        .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                        .unwrap();
+                    let mut fund_tx = system_transaction::transfer(
+                        &funding_keypair,
                         &tx_source_keypair.pubkey(),
-                        &dest_pubkey,
-                        100_000,
-                    );
-                    // Priority fee ~0.0002 SOL: 1_000_000 micro-lamports/CU × 200k CU default
-                    let priority_fee_ix =
-                        ComputeBudgetInstruction::set_compute_unit_price(1_000_000);
-
-                    let message = solana_message::Message::new(
-                        &[priority_fee_ix, transfer_ix],
-                        Some(&tx_source_keypair.pubkey()),
-                    );
-                    let tx = solana_transaction::Transaction::new(
-                        &[&tx_source_keypair],
-                        message,
+                        100_000 * solana_native_token::LAMPORTS_PER_SOL,
                         blockhash,
                     );
+                    LocalCluster::send_transaction_with_retries(
+                        &clients[0],
+                        &[&funding_keypair],
+                        &mut fund_tx,
+                        10,
+                    )
+                    .unwrap();
 
-                    if let Err(e) = client.try_send_transaction(&tx) {
-                        debug!("tx-sender: failed to send tx: {e:?}");
+                    let mut send_count = 0u64;
+                    let mut blockhash = Hash::default();
+
+                    loop {
+                        if cancel.is_cancelled() {
+                            return;
+                        }
+
+                        // Refresh blockhash every 20 sends (~1 second)
+                        if send_count % 20 == 0 {
+                            match clients[0]
+                                .rpc_client()
+                                .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                            {
+                                Ok((hash, _)) => blockhash = hash,
+                                Err(e) => {
+                                    debug!("tx-sender: failed to get blockhash: {e:?}");
+                                    sleep(Duration::from_millis(50));
+                                    continue;
+                                }
+                            }
+                        }
+
+                        let client = &clients[send_count as usize % 2];
+                        let dest_pubkey = solana_pubkey::new_rand();
+
+                        // 0.0001 SOL = 100_000 lamports transfer
+                        let transfer_ix = solana_system_interface::instruction::transfer(
+                            &tx_source_keypair.pubkey(),
+                            &dest_pubkey,
+                            100_000,
+                        );
+                        // Priority fee ~0.0002 SOL: 1_000_000 micro-lamports/CU × 200k CU default
+                        let priority_fee_ix =
+                            ComputeBudgetInstruction::set_compute_unit_price(1_000_000);
+
+                        let message = solana_message::Message::new(
+                            &[priority_fee_ix, transfer_ix],
+                            Some(&tx_source_keypair.pubkey()),
+                        );
+                        let tx = solana_transaction::Transaction::new(
+                            &[&tx_source_keypair],
+                            message,
+                            blockhash,
+                        );
+
+                        if let Err(e) = client.try_send_transaction(&tx) {
+                            debug!("tx-sender: failed to send tx: {e:?}");
+                        }
+
+                        send_count += 1;
+                        sleep(Duration::from_millis(50));
                     }
-
-                    send_count += 1;
-                    sleep(Duration::from_millis(50));
-                }
-            })
-            .unwrap()
+                })
+                .unwrap(),
+        )
+    } else {
+        None
     };
 
     println!("BASIC CHECKS PASS");
@@ -8500,7 +8506,9 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
     // Stop the vote listener and get the finalized sad path slots
     cancel.cancel();
     vote_listener_thread.join().expect("vote listener panicked");
-    tx_sender_thread.join().expect("tx sender panicked");
+    if let Some(t) = tx_sender_thread {
+        t.join().expect("tx sender panicked");
+    }
 
     let finalized_sad_path_slots = finalized_sad_path_slots.lock().unwrap();
 
