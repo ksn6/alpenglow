@@ -8431,39 +8431,56 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
     // Spawn a background thread to fund an account and send transfers at 20 tx/sec.
     let tx_sender_thread = if send_background_txs {
         let cancel = cancel.clone();
-        let client_node_0 = cluster
-            .build_validator_tpu_quic_client(&validator_keys[0].pubkey())
-            .unwrap();
-        let client_node_1 = cluster
-            .build_validator_tpu_quic_client(&validator_keys[1].pubkey())
-            .unwrap();
+        let rpc_url_0 = format!(
+            "http://{}",
+            cluster
+                .get_contact_info(&validator_keys[0].pubkey())
+                .unwrap()
+                .rpc()
+                .unwrap()
+        );
+        let rpc_url_1 = format!(
+            "http://{}",
+            cluster
+                .get_contact_info(&validator_keys[1].pubkey())
+                .unwrap()
+                .rpc()
+                .unwrap()
+        );
         let funding_keypair = cluster.funding_keypair.insecure_clone();
 
         Some(
             Builder::new()
                 .name("dummy-tx-sender".to_string())
                 .spawn(move || {
-                    let clients = [client_node_0, client_node_1];
+                    let clients = [
+                        RpcClient::new_with_commitment(
+                            rpc_url_0,
+                            CommitmentConfig::processed(),
+                        ),
+                        RpcClient::new_with_commitment(
+                            rpc_url_1,
+                            CommitmentConfig::processed(),
+                        ),
+                    ];
 
                     // Fund the source account with 100k SOL
                     let tx_source_keypair = Keypair::new();
-                    let (blockhash, _) = clients[0]
-                        .rpc_client()
-                        .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-                        .unwrap();
-                    let mut fund_tx = system_transaction::transfer(
-                        &funding_keypair,
-                        &tx_source_keypair.pubkey(),
-                        100_000 * solana_native_token::LAMPORTS_PER_SOL,
+                    let blockhash = clients[0].get_latest_blockhash().unwrap();
+                    let fund_tx = solana_transaction::Transaction::new_signed_with_payer(
+                        &[solana_system_interface::instruction::transfer(
+                            &funding_keypair.pubkey(),
+                            &tx_source_keypair.pubkey(),
+                            10 * solana_native_token::LAMPORTS_PER_SOL,
+                        )],
+                        Some(&funding_keypair.pubkey()),
+                        &[&funding_keypair],
                         blockhash,
                     );
-                    LocalCluster::send_transaction_with_retries(
-                        &clients[0],
-                        &[&funding_keypair],
-                        &mut fund_tx,
-                        10,
-                    )
-                    .unwrap();
+                    clients[0]
+                        .send_and_confirm_transaction(&fund_tx)
+                        .unwrap();
+                    info!("tx-sender: funded source account");
 
                     let mut send_count = 0u64;
                     let mut blockhash = Hash::default();
@@ -8475,11 +8492,8 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
 
                         // Refresh blockhash every 20 sends (~1 second)
                         if send_count % 20 == 0 {
-                            match clients[0]
-                                .rpc_client()
-                                .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-                            {
-                                Ok((hash, _)) => blockhash = hash,
+                            match clients[0].get_latest_blockhash() {
+                                Ok(hash) => blockhash = hash,
                                 Err(e) => {
                                     debug!("tx-sender: failed to get blockhash: {e:?}");
                                     sleep(Duration::from_millis(50));
@@ -8501,17 +8515,14 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
                         let priority_fee_ix =
                             ComputeBudgetInstruction::set_compute_unit_price(1_000_000);
 
-                        let message = solana_message::Message::new(
+                        let tx = solana_transaction::Transaction::new_signed_with_payer(
                             &[priority_fee_ix, transfer_ix],
                             Some(&tx_source_keypair.pubkey()),
-                        );
-                        let tx = solana_transaction::Transaction::new(
                             &[&tx_source_keypair],
-                            message,
                             blockhash,
                         );
 
-                        if let Err(e) = client.try_send_transaction(&tx) {
+                        if let Err(e) = client.send_transaction(&tx) {
                             debug!("tx-sender: failed to send tx: {e:?}");
                         }
 
