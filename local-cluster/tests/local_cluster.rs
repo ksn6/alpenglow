@@ -8102,7 +8102,38 @@ fn test_alpenglow_add_missing_parent_ready() {
 /// - Vote forwarding continues (without skip injection) to maintain consensus
 /// - Uses `check_for_new_roots` to verify cluster continues making progress
 /// - Asserts at least 2 sad path slots were successfully finalized in Phase 2
-///
+fn log_blockstore_slot_components(ledger_path: &Path, from_slot: u64) {
+    let blockstore = open_blockstore(ledger_path);
+    for (slot, _meta) in blockstore.slot_meta_iterator(from_slot).unwrap() {
+        let Ok((components, _ranges, _is_full)) =
+            blockstore.get_slot_components_with_shred_info(slot, 0, true)
+        else {
+            continue;
+        };
+        if components.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<String> = components
+            .iter()
+            .map(|component| match component {
+                BlockComponent::EntryBatch(entries) => {
+                    let num_txs: usize = entries.iter().map(|e| e.transactions.len()).sum();
+                    format!("EntryBatch({num_txs})")
+                }
+                BlockComponent::BlockMarker(VersionedBlockMarker::V1(marker)) => match marker {
+                    BlockMarkerV1::BlockHeader(_) => "BlockHeader".to_string(),
+                    BlockMarkerV1::BlockFooter(_) => "BlockFooter".to_string(),
+                    BlockMarkerV1::UpdateParent(_) => "UpdateParent".to_string(),
+                    BlockMarkerV1::GenesisCertificate(_) => "GenesisCertificate".to_string(),
+                },
+            })
+            .collect();
+
+        info!("Slot {slot} components: [{}]", parts.join(", "));
+    }
+}
+
 /// ## Key Validation Points
 /// - FLH sad path triggers correctly when optimistic parent mismatches finalized parent
 /// - Leaders recover and produce blocks after sad path detection
@@ -8494,7 +8525,48 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
         None
     };
 
-    println!("BASIC CHECKS PASS");
+    let blockstore_monitor_thread = {
+        let cancel = cancel.clone();
+        let node_0_ledger_path = cluster.ledger_path(&validator_keys[0].pubkey());
+        let node_0_rpc_url = format!(
+            "http://{}",
+            cluster
+                .get_contact_info(&validator_keys[0].pubkey())
+                .unwrap()
+                .rpc()
+                .unwrap()
+        );
+
+        Builder::new()
+            .name("blockstore-monitor".to_string())
+            .spawn(move || {
+                let rpc_client = RpcClient::new(node_0_rpc_url);
+                let mut last_finalized: u64 = 0;
+
+                loop {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    let finalized = rpc_client
+                        .get_slot_with_commitment(CommitmentConfig::finalized())
+                        .unwrap_or(0);
+
+                    if finalized > last_finalized {
+                        info!(
+                            "Node 0 finalized slot {finalized} (was {last_finalized}), \
+                             logging components for slots {}..={finalized}",
+                            last_finalized + 1
+                        );
+                        log_blockstore_slot_components(&node_0_ledger_path, last_finalized + 1);
+                        last_finalized = finalized;
+                    }
+
+                    sleep(Duration::from_millis(500));
+                }
+            })
+            .unwrap()
+    };
 
     cluster_tests::check_for_new_roots(
         16,
@@ -8509,6 +8581,9 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
     if let Some(t) = tx_sender_thread {
         t.join().expect("tx sender panicked");
     }
+    blockstore_monitor_thread
+        .join()
+        .expect("blockstore monitor panicked");
 
     let finalized_sad_path_slots = finalized_sad_path_slots.lock().unwrap();
 
@@ -8523,37 +8598,9 @@ fn test_alpenglow_flh_simple_sad_leader_handover() {
         finalized_sad_path_slots.len()
     );
 
-    // Log blockstore status for node 0
+    // Log final blockstore status for node 0
     let node_0_ledger_path = cluster.ledger_path(&validator_keys[0].pubkey());
-    let blockstore = open_blockstore(&node_0_ledger_path);
-    for (slot, _meta) in blockstore.slot_meta_iterator(0).unwrap() {
-        let Ok((components, _ranges, _is_full)) =
-            blockstore.get_slot_components_with_shred_info(slot, 0, true)
-        else {
-            continue;
-        };
-        if components.is_empty() {
-            continue;
-        }
-
-        let parts: Vec<String> = components
-            .iter()
-            .map(|component| match component {
-                BlockComponent::EntryBatch(entries) => {
-                    let num_txs: usize = entries.iter().map(|e| e.transactions.len()).sum();
-                    format!("EntryBatch({num_txs})")
-                }
-                BlockComponent::BlockMarker(VersionedBlockMarker::V1(marker)) => match marker {
-                    BlockMarkerV1::BlockHeader(_) => "BlockHeader".to_string(),
-                    BlockMarkerV1::BlockFooter(_) => "BlockFooter".to_string(),
-                    BlockMarkerV1::UpdateParent(_) => "UpdateParent".to_string(),
-                    BlockMarkerV1::GenesisCertificate(_) => "GenesisCertificate".to_string(),
-                },
-            })
-            .collect();
-
-        info!("Slot {slot} components: [{}]", parts.join(", "));
-    }
+    log_blockstore_slot_components(&node_0_ledger_path, 0);
 
     quic_server_thread.join().expect("quic server panicked");
 }
