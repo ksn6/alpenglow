@@ -8113,7 +8113,7 @@ fn test_alpenglow_add_missing_parent_ready() {
 fn test_alpenglow_flh_simple_sad_leader_handover() {
     agave_logger::setup_with_default(AG_DEBUG_LOG_FILTER);
 
-    let send_background_txs = false;
+    let send_background_txs = true;
 
     // 4 nodes: 0, 1 are leaders (15% each), 2, 3 are exited with majority stake (35% each).
     // Ranks by stake: nodes 2,3 are ranks 0,1; nodes 0,1 are ranks 2,3.
