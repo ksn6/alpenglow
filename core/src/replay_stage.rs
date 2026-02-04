@@ -785,6 +785,7 @@ impl ReplayStage {
                     &mut progress,
                     &mut replay_timing,
                     migration_status.as_ref(),
+                    &my_pubkey,
                 );
                 generate_new_bank_forks_time.stop();
 
@@ -4933,6 +4934,7 @@ impl ReplayStage {
         progress: &mut ProgressMap,
         replay_timing: &mut ReplayLoopTiming,
         migration_status: &MigrationStatus,
+        my_pubkey: &Pubkey,
     ) {
         // Find the next slot that chains to the old slot
         let mut generate_new_bank_forks_read_lock =
@@ -5043,6 +5045,14 @@ impl ReplayStage {
                 let leader = leader_schedule_cache
                     .slot_leader_at(child_slot, Some(parent_bank))
                     .unwrap();
+
+                // In Alpenglow, BCL owns bank creation for our leader slots.
+                // Skip to avoid racing with BCL on bank_forks.insert().
+                if migration_status.should_allow_block_markers(child_slot) && leader == *my_pubkey {
+                    trace!("skipping bank creation for our leader slot {child_slot}");
+                    continue;
+                }
+
                 info!(
                     "new fork:{} parent:{} root:{}",
                     child_slot,
@@ -5470,6 +5480,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert!(bank_forks
             .read()
@@ -5495,6 +5506,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert!(bank_forks
             .read()
@@ -7407,6 +7419,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert_eq!(bank_forks.read().unwrap().active_bank_slots(), vec![3]);
 
@@ -7438,6 +7451,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert_eq!(bank_forks.read().unwrap().active_bank_slots(), vec![5]);
 
@@ -7470,6 +7484,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert_eq!(bank_forks.read().unwrap().active_bank_slots(), vec![6]);
 
@@ -7501,6 +7516,7 @@ pub(crate) mod tests {
             &mut progress,
             &mut replay_timing,
             &MigrationStatus::default(),
+            &Pubkey::default(),
         );
         assert_eq!(bank_forks.read().unwrap().active_bank_slots(), vec![7]);
     }
