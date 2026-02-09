@@ -51,7 +51,7 @@ impl VoteToVerify {
 /// All verified votes are sent to the rewards, consensus, and repair senders
 /// inside this function.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn verify_and_send_votes(
+pub(super) fn verify_and_send_votes(
     votes_to_verify: &[VoteToVerify],
     root_bank: &Bank,
     stats: &BLSSigVerifierStats,
