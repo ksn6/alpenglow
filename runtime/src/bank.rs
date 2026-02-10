@@ -41,7 +41,7 @@ use {
             partitioned_epoch_rewards::{EpochRewardStatus, VoteRewardsAccounts},
         },
         bank_forks::BankForks,
-        block_component_processor::BlockComponentProcessor,
+        block_component_processor::{vote_reward::VoteRewardAccountState, BlockComponentProcessor},
         epoch_stakes::{BLSPubkeyToRankMap, NodeVoteAccounts, VersionedEpochStakes},
         inflation_rewards::points::InflationPointCalculationEvent,
         installed_scheduler_pool::{BankWithScheduler, InstalledSchedulerRwLock},
@@ -967,17 +967,17 @@ impl Default for BankTestConfig {
 }
 
 /// Data returned from [`Bank::calculate_epoch_inflation_rewards()`].
-struct EpochInflationRewards {
+pub(crate) struct EpochInflationRewards {
     /// Amount of rewards a validator should get if it voted in every slot in
     /// the epoch and its stake is equal to the network capitalization i.e.
     /// the total supply.
-    validator_rewards_lamports: u64,
+    pub(crate) validator_rewards_lamports: u64,
     /// How long a single epoch lasts in years.
-    epoch_duration_in_years: f64,
+    pub(crate) epoch_duration_in_years: f64,
     /// The current inflation rate for the validators.
-    validator_rate: f64,
+    pub(crate) validator_rate: f64,
     /// The current inflation rate for the foundation.
-    foundation_rate: f64,
+    pub(crate) foundation_rate: f64,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -1406,6 +1406,7 @@ impl Bank {
                 new.process_new_epoch(
                     parent.epoch(),
                     parent.slot(),
+                    parent.capitalization.load(Relaxed),
                     parent.block_height(),
                     reward_calc_tracer,
                 );
@@ -1652,6 +1653,7 @@ impl Bank {
         &mut self,
         parent_epoch: Epoch,
         parent_slot: Slot,
+        parent_capitalization: u64,
         parent_height: u64,
         reward_calc_tracer: Option<impl RewardCalcTracer>,
     ) {
@@ -1682,7 +1684,7 @@ impl Bank {
 
         let mut rewards_metrics = RewardsMetrics::default();
         // After saving a snapshot of stakes, apply stake rewards and commission
-        let (_, update_rewards_with_thread_pool_time_us) = measure_us!(self
+        let (epoch_validator_rewards, update_rewards_with_thread_pool_time_us) = measure_us!(self
             .begin_partitioned_rewards(
                 reward_calc_tracer,
                 &thread_pool,
@@ -1691,6 +1693,13 @@ impl Bank {
                 parent_height,
                 &mut rewards_metrics,
             ));
+
+        VoteRewardAccountState::new_epoch_update_account(
+            self,
+            parent_epoch,
+            parent_capitalization,
+            epoch_validator_rewards,
+        );
 
         report_new_epoch_metrics(
             epoch,
@@ -2415,7 +2424,7 @@ impl Bank {
     }
 
     /// For a given [`capitalization`] (total_supply in lamports) and [`epoch`], calculates various inflation related info.
-    fn calculate_epoch_inflation_rewards(
+    pub(crate) fn calculate_epoch_inflation_rewards(
         &self,
         capitalization: u64,
         epoch: Epoch,
@@ -4167,7 +4176,7 @@ impl Bank {
 
     /// Technically this issues (or even burns!) new lamports,
     /// so be extra careful for its usage
-    fn store_account_and_update_capitalization(
+    pub(crate) fn store_account_and_update_capitalization(
         &self,
         pubkey: &Pubkey,
         new_account: &AccountSharedData,
