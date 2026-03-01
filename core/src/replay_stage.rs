@@ -351,6 +351,7 @@ struct ReplayLoopTiming {
     process_duplicate_slots_elapsed_us: u64,
     process_unfrozen_gossip_verified_vote_hashes_elapsed_us: u64,
     process_popular_pruned_forks_elapsed_us: u64,
+    process_switch_bank_events_elapsed_us: u64,
     repair_correct_slots_elapsed_us: u64,
     retransmit_not_propagated_elapsed_us: u64,
     generate_new_bank_forks_read_lock_us: Saturating<u64>,
@@ -510,6 +511,11 @@ impl ReplayLoopTiming {
                 (
                     "process_popular_pruned_forks_elapsed_us",
                     self.process_popular_pruned_forks_elapsed_us as i64,
+                    i64
+                ),
+                (
+                    "process_switch_bank_events_elapsed_us",
+                    self.process_switch_bank_events_elapsed_us as i64,
                     i64
                 ),
                 (
@@ -883,6 +889,8 @@ impl ReplayStage {
                         progress.handle_new_root(&bank_forks_r);
                     }
 
+                    let mut process_switch_bank_events_time =
+                        Measure::start("process_switch_bank_events_time");
                     Self::process_switch_bank_events(
                         &my_pubkey,
                         &switch_bank_receiver,
@@ -891,6 +899,9 @@ impl ReplayStage {
                         &bank_forks,
                         &mut progress,
                     );
+                    process_switch_bank_events_time.stop();
+                    replay_timing.process_switch_bank_events_elapsed_us +=
+                        process_switch_bank_events_time.as_us();
 
                     // Banks might have been switched above, these maps are no longer accurate
                     drop(ancestors);
@@ -2249,6 +2260,7 @@ impl ReplayStage {
                     }
                 }
                 let _ = progress.remove(&slot);
+                progress.increment_num_bank_switches(slot);
 
                 // Switch the blockstore data atomically, handles slot meta chaining so generate new bank forks can proceed
                 blockstore.switch_block_from_alternate(slot, location);
